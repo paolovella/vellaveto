@@ -51,7 +51,7 @@ clap = { version = "4.6", features = ["derive"] }
 dashmap = "6"
 jsonwebtoken = { version = "11", features = ["aws_lc_rs", "use_pem"] }
 reqwest = { workspace = true, features = ["stream"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 tokio-tungstenite = { workspace = true }

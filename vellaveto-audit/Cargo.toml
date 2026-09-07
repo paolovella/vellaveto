@@ -41,7 +41,7 @@ opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 # Phase 37: Zero-Knowledge Audit Trails (Pedersen commitments)
-curve25519-dalek = { version = "4", optional = true, features = ["rand_core"] }
+curve25519-dalek = { version = "5", optional = true, features = ["rand_core"] }
 # Phase 37.2: Groth16 batch proofs
 ark-groth16 = { version = "0.6", optional = true }
 ark-bn254 = { version = "0.6", optional = true }
