@@ -1094,6 +1094,214 @@ async fn test_initialize_chain_recovers_next_global_sequence() {
     assert_eq!(entries.last().unwrap().sequence, 3);
 }
 
+/// Collect every sequence number written under `log_path`, across the rotated
+/// files and the currently active one.
+///
+/// `list_rotated_files` sorts lexically, which is a true chronological order
+/// here because `rotated_path` formats the name as
+/// `<stem>.<timestamp>-<seq:010>.<ext>` — the timestamp dominates and the
+/// zero-padded sequence breaks ties.
+async fn rotated_sequences(log_path: &std::path::Path) -> Vec<u64> {
+    let reader = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(0);
+    let mut sequences = Vec::new();
+    for rotated in reader.list_rotated_files().unwrap() {
+        let rotated_reader = AuditLogger::new(rotated).with_max_file_size(0);
+        sequences.extend(
+            rotated_reader
+                .load_entries()
+                .await
+                .unwrap()
+                .iter()
+                .map(|e| e.sequence),
+        );
+    }
+    sequences
+}
+
+async fn all_sequences_across_rotations(log_path: &std::path::Path) -> Vec<u64> {
+    let reader = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(0);
+    let mut sequences = rotated_sequences(log_path).await;
+    sequences.extend(
+        reader
+            .load_entries()
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.sequence),
+    );
+    sequences
+}
+
+fn assert_no_duplicate_sequences(sequences: &[u64], context: &str) {
+    let mut sorted = sequences.to_vec();
+    sorted.sort_unstable();
+    let mut deduped = sorted.clone();
+    deduped.dedup();
+    assert_eq!(
+        sorted, deduped,
+        "{context}: sequence numbers were reused across the rotation boundary. \
+         Observed (sorted): {sorted:?}"
+    );
+}
+
+/// Write entries until rotation has fired at least once.
+async fn seed_rotated_log(log_path: &std::path::Path) -> AuditLogger {
+    let logger = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(200);
+    let action = test_action();
+    for _ in 0..20 {
+        logger
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+    assert!(
+        !logger.list_rotated_files().unwrap().is_empty(),
+        "precondition: rotation actually fired"
+    );
+    logger
+}
+
+/// A restart after rotation must not reuse sequence numbers.
+///
+/// `maybe_rotate` renames the active log away, so until the next append
+/// recreates it there is no active file at all. A process restarting in that
+/// window used to find an empty `load_entries()`, take `initialize_chain`'s
+/// early return, and leave `global_sequence` at 0 — renumbering the next
+/// entries 0, 1, 2, … on top of the sequences already in the rotated file.
+/// That is exactly the reuse the invariant on `AuditLogger::global_sequence`
+/// says cannot happen.
+///
+/// The bar is the **rotated** high-water mark, not the overall one. Entries
+/// still in the active log when it is destroyed leave no durable record — the
+/// manifest describes only what rotation moved aside — so no implementation can
+/// recover their sequences. What recovery must clear is everything the manifest
+/// does know about.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_when_active_log_missing() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let action = test_action();
+
+    let _logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Reproduce the post-rotation, pre-append state: the active log is gone.
+    std::fs::remove_file(&log_path).unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "recovered sequence {recovered} must be past the rotated high-water mark \
+         {rotated_high_water}"
+    );
+
+    for _ in 0..5 {
+        restarted
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+
+    assert_no_duplicate_sequences(
+        &all_sequences_across_rotations(&log_path).await,
+        "restart with missing active log",
+    );
+}
+
+/// The same reuse, reached without any crash-timing window.
+///
+/// `load_entries` skips corrupt lines with a warning rather than failing, so a
+/// wholly corrupt active log also yields an empty `entries` and takes the same
+/// early return.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_when_active_log_corrupt() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let _logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Every line unparseable — load_entries returns empty, not an error.
+    std::fs::write(&log_path, "{ not json\n{ also not json\n").unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "recovered sequence {recovered} must be past the rotated high-water mark \
+         {rotated_high_water}"
+    );
+}
+
+/// Manifests written before `max_sequence` existed must still recover.
+///
+/// The fallback reconstructs the high-water mark from the `entry_count` fields
+/// those manifests already carry. Stripping the new field models an operator
+/// upgrading a deployment whose manifest predates it.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_from_legacy_manifest() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Rewrite the manifest without `max_sequence`, as an older build would have.
+    let manifest_path = logger.rotation_manifest_path();
+    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(
+        original.contains("max_sequence"),
+        "precondition: manifest carries the new field before stripping"
+    );
+    let stripped: String = original
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            entry.as_object_mut().unwrap().remove("max_sequence");
+            format!("{entry}\n")
+        })
+        .collect();
+    std::fs::write(&manifest_path, stripped).unwrap();
+    std::fs::remove_file(&log_path).unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "legacy-manifest recovery {recovered} must be past the rotated high-water \
+         mark {rotated_high_water}"
+    );
+}
+
+/// Adding `max_sequence` to the manifest must not break cross-rotation
+/// verification — the backward-compatibility claim, asserted rather than assumed.
+#[tokio::test]
+async fn test_verify_across_rotations_accepts_max_sequence_field() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let logger = seed_rotated_log(&log_path).await;
+    assert!(
+        std::fs::read_to_string(logger.rotation_manifest_path())
+            .unwrap()
+            .contains("max_sequence"),
+        "precondition: manifest carries the new field"
+    );
+
+    let verification = logger.verify_across_rotations().await.unwrap();
+    assert!(
+        verification.valid,
+        "cross-rotation verification failed: {:?}",
+        verification.first_failure
+    );
+    assert!(verification.files_checked > 0);
+}
+
 #[tokio::test]
 async fn test_rotation_disabled_when_zero() {
     let dir = TempDir::new().unwrap();
