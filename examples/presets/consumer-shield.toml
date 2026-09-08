@@ -33,7 +33,13 @@ credential_epoch_interval = 100
 # "level2" = level1 + filler word removal
 stylometric_level = "none"
 
-# Optional: Add custom PII patterns beyond the built-in set
+# Optional: Add custom PII patterns beyond the built-in set.
+#
+# Built-ins already cover: file paths (POSIX, ~/, Windows), emails, US phone
+# numbers, SSNs, credit cards (Luhn-checked), IPv4, IPv6, JWTs, and AWS key
+# IDs. There is no built-in personal-name detection — that needs named-entity
+# recognition, not a regex — so add site-specific patterns here for names,
+# employee IDs, internal hostnames, and the like.
 # [[shield.custom_pii_patterns]]
 # name = "employee_id"
 # pattern = "EMP-\\d{6}"

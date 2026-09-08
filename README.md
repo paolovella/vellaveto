@@ -62,7 +62,7 @@ Enterprise security is half the story. When AI providers process tool calls thro
 ```
 You type: "Read my medical records at /home/alice/health/lab-results.pdf"
   → Shield intercepts before the provider sees it
-  → PII replaced: "Read my medical records at [PII_PATH_1]"
+  → PII replaced: "Read my medical records at [PII_PATH_9F3C1A0E7B24D85F]"
   → Provider processes the sanitized request
   → Response comes back, Shield restores original paths
   → Encrypted local audit proves what was shared and what was stripped
@@ -72,7 +72,7 @@ You type: "Read my medical records at /home/alice/health/lab-results.pdf"
 
 | Layer | What It Protects | How |
 |---|---|---|
-| **PII sanitization** | File paths, emails, IPs, names, credentials | Bidirectional replacement with `[PII_{CAT}_{SEQ}]` placeholders — provider never sees originals |
+| **PII sanitization** | File paths, emails, phone numbers, SSNs, credit cards, IPv4/IPv6, JWTs, AWS key IDs | Bidirectional replacement with `[PII_{CAT}_{TOKEN}]` placeholders — provider never sees originals. Anything site-specific (employee IDs, internal hostnames, personal names) goes in `[[shield.custom_pii_patterns]]`; there is no built-in name detection |
 | **Encrypted local audit** | Full interaction history | XChaCha20-Poly1305 + Argon2id, stored on your machine, not the provider's |
 | **Session isolation** | Cross-session correlation | Each session gets a fresh credential — provider cannot link sessions to build a profile |
 | **Credential vault** | API keys, tokens passed through tool calls | Blind credential binding — provider sees the tool call but not the credential value |
@@ -397,9 +397,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 12919 |
+| Rust tests | 12931 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 13896 |
+| Total tests tracked by manifest | 13908 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
