@@ -398,7 +398,10 @@ async fn main() -> Result<()> {
     let timeout = std::time::Duration::from_secs(cli.timeout);
     let mut bridge = ProxyBridge::new(engine, policies, audit)
         .with_timeout(timeout)
-        .with_trace(cli.trace);
+        .with_trace(cli.trace)
+        // SECURITY (R271-MCP-1): honour audit.strict_mode over stdio, as the
+        // HTTP transports already do. First read of policy_config.audit here.
+        .with_audit_strict_mode(policy_config.audit.strict_mode);
     bridge = bridge.with_mediation_config(vellaveto_mcp::mediation::MediationConfig {
         dlp_enabled: false,
         dlp_blocking: false,
