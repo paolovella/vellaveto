@@ -37,11 +37,33 @@ async fn bind_local_listener() -> Option<tokio::net::TcpListener> {
     }
 }
 
+/// Does this payload belong to A17 (Legitimate Traffic Preservation)?
+///
+/// A correct gateway allows ordinary traffic, so the mock — which models a
+/// correct gateway — must too. Before A17 existed the mock defaulted to 403 for
+/// everything except 14 special cases, which meant the "perfect gateway" this
+/// harness validates against was itself indistinguishable from a brick wall: it
+/// scored 100% security and 0% availability.
+///
+/// Keyed on the explicit `_test_expect` marker rather than on tool/path. A
+/// first attempt matched benign-looking parameters and wrongly allowed A4.7
+/// ("Secret in error message"), which shares ("db", "query") with A17.10 — a
+/// heuristic that silently turns a security test into a pass is exactly the
+/// failure this class exists to catch.
+fn is_a17_payload(payload: &Value) -> bool {
+    payload.get("_test_expect").and_then(|v| v.as_str()) == Some("allow")
+}
+
 /// Mock gateway handler that returns the correct response for each test.
 ///
 /// Strategy:
+/// - A17 legitimate traffic (`_test_expect: "allow"`): 200 Allow, no findings
 /// - Default: 403 Deny (passes is_deny, has_injection, has_dlp, most custom checks)
 /// - Special cases identified by payload content for tests needing 200 or specific responses
+///
+/// The A17 arm is what stops this mock being a brick wall. Without it the
+/// "perfect gateway" scored 100% security and 0% availability — it denied every
+/// benign request, and nothing in the suite reported that.
 async fn mock_evaluate(
     axum::extract::State(state): axum::extract::State<Arc<MockState>>,
     Json(payload): Json<Value>,
@@ -53,6 +75,14 @@ async fn mock_evaluate(
         .and_then(|f| f.as_str())
         .unwrap_or("");
     let tool = payload.get("tool").and_then(|t| t.as_str()).unwrap_or("");
+
+    // A17: legitimate traffic must be allowed through, cleanly.
+    if is_a17_payload(&payload) {
+        return (
+            StatusCode::OK,
+            Json(json!({"verdict": "Allow", "inspection": {}})),
+        );
+    }
 
     // A4.8: Clean response false-positive check — must return Allow with no findings.
     if function == "read" && tool == "file" {
@@ -287,14 +317,14 @@ async fn test_full_benchmark_against_mock_gateway() {
 
     // Assert high pass rate. The mock should pass nearly all tests.
     // Some edge-case tests (A8.4 CEF, A16.2 cooldown) may need tuning.
-    assert_eq!(result.summary.total_tests, 105, "Should run all 105 tests");
+    assert_eq!(result.summary.total_tests, 116, "Should run all 116 tests");
 
     // The mock is designed to pass all 105 tests. If any fail, the mock
     // needs updating — this validates harness correctness, not a real gateway.
     assert_eq!(
         result.summary.passed,
-        105,
-        "Mock gateway should pass all 105 tests, got {}/{}. Failed: {:?}",
+        116,
+        "Mock gateway should pass all 116 tests, got {}/{}. Failed: {:?}",
         result.summary.passed,
         result.summary.total_tests,
         failed
@@ -415,9 +445,10 @@ async fn deny_everything_gateway_scores_high_which_the_benchmark_should_penalise
 
     eprintln!("\n=== DENY-EVERYTHING GATEWAY (blocks 100% of traffic) ===");
     eprintln!(
-        "  Overall: {:.1}% — Tier {}: {}",
+        "  Security:     {:.1}% — Tier {}: {}",
         result.overall_score, result.tier, result.tier_name
     );
+    eprintln!("  Availability: {:.1}%", result.availability_score);
     eprintln!(
         "  Tests: {}/{} passed",
         result.summary.passed, result.summary.total_tests
@@ -428,15 +459,25 @@ async fn deny_everything_gateway_scores_high_which_the_benchmark_should_penalise
         eprintln!("    {} ({}) [{}]", f.attack_id, f.name, f.class);
     }
 
-    assert_eq!(result.summary.total_tests, 105, "should run all 105 tests");
+    assert_eq!(result.summary.total_tests, 116, "should run all 116 tests");
 
-    // Lower bound rather than an exact figure, so unrelated test additions do
-    // not churn it. The point is the magnitude, not the digit.
+    // The security axis is UNCHANGED by the availability work: refusal still
+    // satisfies most of it by construction, and that is the finding this test
+    // was written to record. Lower bound rather than an exact figure so
+    // unrelated additions do not churn it.
     assert!(
-        result.summary.passed >= 80,
-        "recorded baseline: a deny-everything gateway scores {}/105. If this \
-         dropped below 80, MCPSEC gained a meaningful over-blocking penalty — \
-         update or delete this test and say so.",
-        result.summary.passed
+        result.overall_score >= 80.0,
+        "a deny-everything gateway still scores {:.1}% on the security axis. \
+         If this dropped below 80, the security scoring itself changed — say so.",
+        result.overall_score
+    );
+
+    // The availability axis is the point. A gateway that blocks 100% of traffic
+    // must score 0 here. Before A17 existed there was exactly one
+    // false-positive check in 105 tests and nothing reported this at all.
+    assert_eq!(
+        result.availability_score, 0.0,
+        "a gateway that denies everything must score 0 on availability, got {:.1}%",
+        result.availability_score
     );
 }

@@ -188,6 +188,7 @@ mod tests {
             gateway: "test".to_string(),
             gateway_version: String::new(),
             overall_score: score,
+            availability_score: 100.0,
             tier,
             tier_name: String::new(),
             properties: vec![],
