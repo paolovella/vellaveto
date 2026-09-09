@@ -113,7 +113,8 @@ jobs:
             scripts/check-claim-anchors.sh \
             scripts/generate-evidence-manifest.sh \
             scripts/report-formal-tooling.sh \
-            scripts/run-dependency-monitor.sh
+            scripts/run-dependency-monitor.sh \
+            scripts/clippy-flags.sh
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -143,8 +144,11 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets --locked
 
+      # Default features only — this is the fast per-push gate. Non-default
+      # features are linted by the feature-matrix job, which is where the
+      # heavier dependency trees belong.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D unsafe-code -A clippy::uninlined_format_args -A clippy::field_reassign_with_default -A clippy::const_is_empty -A clippy::unnecessary_literal_unwrap -A clippy::assertions_on_constants
+        run: cargo clippy --workspace --all-targets --locked -- $(bash scripts/clippy-flags.sh)
 
       - name: Reject unwrap()/expect() in library code
         run: |
@@ -319,31 +323,8 @@ jobs:
       - name: Build docs (verify no broken links)
         run: cargo doc --workspace --no-deps --locked
 
-  # ───────────────────────────────────────────────────────
-  # 4. Feature-gated critical paths
-  # ───────────────────────────────────────────────────────
-  feature-gates:
-    name: Feature Gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: check
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
-        with:
-          cache-on-failure: true
-
-      - name: MCP A2A feature path
-        run: cargo test -p vellaveto-mcp --features a2a --locked
-
-      - name: Server Redis backend feature path
-        run: cargo test -p vellaveto-server --features redis-backend --locked
+  # The former "Feature Gates" job (a2a, redis-backend) has been folded into
+  # the feature-matrix job below, so every feature is listed in one place.
 
   # ───────────────────────────────────────────────────────
   # 5. Security audit
@@ -705,8 +686,30 @@ jobs:
             cargo_args: "-p vellaveto-server --no-default-features --features projector --locked"
           - name: zk-audit
             cargo_args: "-p vellaveto-audit --features zk-audit --locked"
-          - name: all features
-            cargo_args: "-p vellaveto-server --features discovery,projector -p vellaveto-audit --features zk-audit --locked"
+          # grpc gates ~10,900 lines of transport code in vellaveto-http-proxy
+          # (proxy/mod.rs) that no other job compiles, tests included.
+          - name: grpc
+            cargo_args: "-p vellaveto-http-proxy --features grpc --locked"
+          # The server feature pulls in vellaveto-audit/postgres-store too.
+          - name: postgres-store
+            cargo_args: "-p vellaveto-server --features postgres-store --locked"
+          # Folded in from the former "Feature Gates" job.
+          - name: a2a
+            cargo_args: "-p vellaveto-mcp --features a2a --locked"
+          - name: redis-backend
+            cargo_args: "-p vellaveto-server --features redis-backend --locked"
+          # Per-crate --all-features, so a lint or a break is attributed to one
+          # crate rather than surfacing only in the workspace-wide entry.
+          - name: audit all features
+            cargo_args: "-p vellaveto-audit --all-features --locked"
+          - name: mcp all features
+            cargo_args: "-p vellaveto-mcp --all-features --locked"
+          - name: server all features
+            cargo_args: "-p vellaveto-server --all-features --locked"
+          # The catch-all: a feature added later is covered here on day one,
+          # even if nobody remembers to add a row above.
+          - name: workspace all features
+            cargo_args: "--workspace --all-features --locked"
     steps:
       - name: Free disk space
         run: |
@@ -722,6 +725,12 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           cache-on-failure: true
+
+      # Clippy runs before the tests: this job used to run `cargo test` only,
+      # so lints behind a non-default feature were never checked anywhere —
+      # zk-audit was in this matrix and still accumulated a finding.
+      - name: "Clippy: ${{ matrix.name }}"
+        run: cargo clippy ${{ matrix.cargo_args }} --all-targets -- $(bash scripts/clippy-flags.sh)
 
       - name: "Test: ${{ matrix.name }}"
         run: cargo test ${{ matrix.cargo_args }}

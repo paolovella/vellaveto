@@ -39,12 +39,15 @@ jobs:
         id: clippy
         run: |
           set -o pipefail
+          # --all-features so the security dashboard covers feature-gated code
+          # too; without it the SARIF report silently omits whole modules.
           cargo clippy \
             --workspace \
             --all-targets \
+            --all-features \
             --locked \
             --message-format=json \
-            -- -D warnings -D unsafe-code -A clippy::uninlined_format_args -A clippy::field_reassign_with_default -A clippy::const_is_empty -A clippy::unnecessary_literal_unwrap -A clippy::assertions_on_constants \
+            -- $(bash scripts/clippy-flags.sh) \
             | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
