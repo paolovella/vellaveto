@@ -2213,6 +2213,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         let message = exporter.format_rfc5424(&entry);
@@ -2258,6 +2259,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         let message = exporter.format_rfc5424(&entry);
@@ -2958,6 +2960,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         let output = exporter.format_events(&[entry]).unwrap();
@@ -3010,6 +3013,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         // Should not fail even with bad timestamp, uses fallback to now()
@@ -3087,6 +3091,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         let msg = exporter.format_rfc5424(&entry);
@@ -3127,6 +3132,7 @@ mod tests {
             prev_hash: None,
             commitment: None,
             tenant_id: None,
+            acis_envelope: None,
         };
 
         let msg = exporter.format_rfc5424(&entry);
