@@ -294,6 +294,7 @@ mod tests {
             gateway: "test-gateway".to_string(),
             gateway_version: "1.0.0".to_string(),
             overall_score: 75.0,
+            availability_score: 100.0,
             tier: 3,
             tier_name: "Strong".to_string(),
             properties: vec![PropertyScore {

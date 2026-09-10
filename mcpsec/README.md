@@ -2,7 +2,7 @@
 
 **Version 1.2.0** | **Apache-2.0 License**
 
-MCPSEC is an open, vendor-neutral security benchmark for evaluating MCP (Model Context Protocol) gateway security. It defines 10 formal security properties and 105 reproducible attack test cases across 16 attack classes, derived from real-world penetration testing of MCP deployments.
+MCPSEC is an open, vendor-neutral security benchmark for evaluating MCP (Model Context Protocol) gateway security. It defines 10 formal security properties and 116 reproducible attack test cases across 17 attack classes, derived from real-world penetration testing of MCP deployments. Results are reported on two axes: security, and availability — the share of legitimate traffic allowed through.
 
 ## Why MCPSEC?
 
@@ -22,7 +22,7 @@ cargo run -p mcpsec -- --target http://localhost:3000 --output results/my-gatewa
 # Run with markdown report
 cargo run -p mcpsec -- --target http://localhost:3000 --format markdown
 
-# List all 105 test cases
+# List all 116 test cases
 cargo run -p mcpsec -- --list
 
 # Run specific attack classes only
@@ -60,7 +60,7 @@ cargo run -p mcpsec -- --target http://localhost:3000 --format junit --output re
 
 See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 
-### 16 Attack Classes (A1-A16)
+### 17 Attack Classes (A1-A17)
 
 | # | Class | Tests | OWASP Ref |
 |---|-------|-------|-----------|
@@ -80,8 +80,9 @@ See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 | A14 | Schema Pattern Bypass | 4 | - |
 | A15 | Agent Identity Spoofing | 5 | ASI02 |
 | A16 | Circuit Breaker Evasion | 4 | MCP10 |
+| A17 | Legitimate Traffic | 11 | — |
 
-**Total: 105 test cases.** See [ATTACKS.md](ATTACKS.md) for full catalog.
+**Total: 116 test cases** (105 security + 11 legitimate-traffic). See [ATTACKS.md](ATTACKS.md) for full catalog.
 
 ## Scoring
 
@@ -93,6 +94,21 @@ See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 | Tier 3: Strong | 60-79% | Injection + DLP + audit |
 | Tier 4: Comprehensive | 80-94% | Full threat coverage |
 | Tier 5: Hardened | 95-100% | All properties verified |
+
+The tier applies to the **security** axis only, and the bands are deliberately
+unchanged from before the availability axis existed, so old and new security
+scores remain comparable.
+
+### Availability
+
+`availability_score` is reported separately: the percentage of the 11 A17
+legitimate-traffic cases the gateway allowed through. It has no tier.
+
+Read the two together. A gateway that refuses every request scores highly on
+security by construction — 57 of the security tests pass on a denial alone, and
+a measured deny-everything gateway reaches 96/105 (91.3%, Tier 4
+"Comprehensive") while allowing nothing. The security number alone cannot tell
+"secure" from "closed"; the availability number can.
 
 See [SCORING.md](SCORING.md) for weights and methodology.
 
@@ -115,7 +131,7 @@ The gateway should return a JSON response with a `verdict` field indicating `All
 mcpsec/
 ├── README.md              # This file
 ├── PROPERTIES.md          # 10 formal security properties
-├── ATTACKS.md             # 16 attack classes, 105 test cases
+├── ATTACKS.md             # 17 attack classes, 116 test cases
 ├── METHODOLOGY.md         # How to run, how to score
 ├── SCORING.md             # Scoring rubric and tiers
 ├── Cargo.toml             # Standalone Rust crate
@@ -126,7 +142,7 @@ mcpsec/
 │   ├── scoring.rs         # Score calculation
 │   ├── compare.rs         # Baseline regression detection
 │   ├── remediation.rs     # Per-class fix guidance
-│   └── attacks/           # 16 attack modules (a01-a16)
+│   └── attacks/           # 17 attack modules (a01-a17)
 ├── tests/
 │   ├── self_test.rs       # Validate harness logic
 │   └── mock_gateway_test.rs # End-to-end test with embedded mock server
