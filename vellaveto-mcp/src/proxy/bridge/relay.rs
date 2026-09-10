@@ -166,9 +166,18 @@ const SWEEP_TIMEOUT_INTERVAL_SECS: u64 = 5;
 /// Bundled mutable I/O handles for the relay loop.
 ///
 /// Groups agent-side and child-side writers to reduce handler argument counts.
-struct IoWriters<'a> {
-    agent: &'a mut tokio::io::Stdout,
-    child: &'a mut ChildStdin,
+///
+/// Generic over both writers so handlers can be driven from tests with
+/// in-memory buffers. They were concrete `tokio::io::Stdout` and `ChildStdin`,
+/// which meant no test could reach a handler at all — the only entry point,
+/// `run`, needs a real stdio pair and a live child process. That is why this
+/// file, which carries every stdio enforcement decision, had no handler-level
+/// tests. Two parameters rather than one because the agent and child writers
+/// are genuinely different types in production.
+pub(super) struct IoWriters<'a, A: tokio::io::AsyncWrite + Unpin, C: tokio::io::AsyncWrite + Unpin>
+{
+    pub(super) agent: &'a mut A,
+    pub(super) child: &'a mut C,
 }
 
 /// Tracks a pending (in-flight) request for timeout, circuit breaker,
@@ -1573,11 +1582,14 @@ impl ProxyBridge {
     }
 
     /// Handle a message received from the agent.
-    async fn handle_agent_message(
+    async fn handle_agent_message<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         msg: Value,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         match classify_message(&msg) {
             MessageType::ToolCall {
@@ -1667,14 +1679,17 @@ impl ProxyBridge {
     }
 
     /// Handle a `tools/call` request from the agent.
-    async fn handle_tool_call(
+    pub(super) async fn handle_tool_call<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         mut msg: Value,
         id: Value,
         tool_name: String,
         arguments: Value,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -2514,7 +2529,7 @@ impl ProxyBridge {
                                         .deny_on_audit_failure(
                                             &id,
                                             agent_writer,
-                                            "AUDIT FAILURE",
+                                            "tool registry trust decision",
                                             &e,
                                         )
                                         .await?
@@ -2558,7 +2573,12 @@ impl ProxyBridge {
                                 .await
                             {
                                 if self
-                                    .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "tool registry trust decision",
+                                        &e,
+                                    )
                                     .await?
                                 {
                                     return Ok(());
@@ -2600,7 +2620,7 @@ impl ProxyBridge {
                             .await
                         {
                             if self
-                                .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                .deny_on_audit_failure(&id, agent_writer, "tool registry trust decision", &e)
                                 .await?
                             {
                                 return Ok(());
@@ -2692,7 +2712,7 @@ impl ProxyBridge {
                                         .deny_on_audit_failure(
                                             &id,
                                             agent_writer,
-                                            "AUDIT FAILURE",
+                                            "tool registry trust decision",
                                             &e,
                                         )
                                         .await?
@@ -2736,7 +2756,12 @@ impl ProxyBridge {
                                 .await
                             {
                                 if self
-                                    .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "tool registry trust decision",
+                                        &e,
+                                    )
                                     .await?
                                 {
                                     return Ok(());
@@ -2783,7 +2808,7 @@ impl ProxyBridge {
                             .await
                         {
                             if self
-                                .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                .deny_on_audit_failure(&id, agent_writer, "tool registry trust decision", &e)
                                 .await?
                             {
                                 return Ok(());
@@ -3789,13 +3814,16 @@ impl ProxyBridge {
     }
 
     /// Handle a `resources/read` request from the agent.
-    async fn handle_resource_read(
+    async fn handle_resource_read<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         msg: Value,
         id: Value,
         uri: String,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -4541,12 +4569,12 @@ impl ProxyBridge {
     }
 
     /// Handle a `sampling/createMessage` request from the child server.
-    async fn handle_sampling_request(
+    async fn handle_sampling_request<A: tokio::io::AsyncWrite + Unpin>(
         &self,
         msg: &Value,
         id: Value,
         state: &mut RelayState,
-        agent_writer: &mut tokio::io::Stdout,
+        agent_writer: &mut A,
     ) -> Result<(), ProxyError> {
         // SECURITY (R237-MCP-2): Circuit breaker check for sampling requests.
         if let Some(ref cb) = self.circuit_breaker {
@@ -5224,12 +5252,12 @@ impl ProxyBridge {
     }
 
     /// Handle an `elicitation/create` request from the child server.
-    async fn handle_elicitation_request(
+    async fn handle_elicitation_request<A: tokio::io::AsyncWrite + Unpin>(
         &self,
         msg: &Value,
         id: Value,
         state: &mut RelayState,
-        agent_writer: &mut tokio::io::Stdout,
+        agent_writer: &mut A,
     ) -> Result<(), ProxyError> {
         // SECURITY (R237-MCP-2): Circuit breaker check for elicitation requests.
         if let Some(ref cb) = self.circuit_breaker {
@@ -5786,14 +5814,17 @@ impl ProxyBridge {
     }
 
     /// Handle a task request (`tasks/get`, `tasks/cancel`, etc.) from the agent.
-    async fn handle_task_request(
+    async fn handle_task_request<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         msg: Value,
         id: Value,
         task_method: String,
         task_id: Option<String>,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -6761,14 +6792,17 @@ impl ProxyBridge {
     }
 
     /// Handle an extension method call (`x-` prefixed methods) from the agent.
-    async fn handle_extension_method(
+    async fn handle_extension_method<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         msg: Value,
         id: Value,
         extension_id: String,
         method: String,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -7730,11 +7764,14 @@ impl ProxyBridge {
     }
 
     /// Handle a passthrough message (not a tool call, resource read, or task request).
-    async fn handle_passthrough(
+    async fn handle_passthrough<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         msg: &Value,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -8280,11 +8317,14 @@ impl ProxyBridge {
     }
 
     /// Handle a response received from the child MCP server.
-    async fn handle_child_response(
+    async fn handle_child_response<
+        A: tokio::io::AsyncWrite + Unpin,
+        C: tokio::io::AsyncWrite + Unpin,
+    >(
         &self,
         mut msg: Value,
         state: &mut RelayState,
-        io: &mut IoWriters<'_>,
+        io: &mut IoWriters<'_, A, C>,
     ) -> Result<(), ProxyError> {
         let IoWriters {
             agent: agent_writer,
@@ -10330,10 +10370,10 @@ impl ProxyBridge {
     }
 
     /// Handle child process termination, flushing pending requests with errors.
-    async fn handle_child_terminated(
+    async fn handle_child_terminated<A: tokio::io::AsyncWrite + Unpin>(
         &self,
         state: &mut RelayState,
-        agent_writer: &mut tokio::io::Stdout,
+        agent_writer: &mut A,
     ) -> Result<(), ProxyError> {
         if !state.pending_requests.is_empty() {
             tracing::error!(
@@ -10392,7 +10432,11 @@ impl ProxyBridge {
     }
 
     /// Sweep timed-out pending requests and send error responses.
-    async fn sweep_timeouts(&self, state: &mut RelayState, agent_writer: &mut tokio::io::Stdout) {
+    async fn sweep_timeouts<A: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        state: &mut RelayState,
+        agent_writer: &mut A,
+    ) {
         let now = Instant::now();
         let timed_out: Vec<String> = state
             .pending_requests
