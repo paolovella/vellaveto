@@ -1606,6 +1606,17 @@ impl McpGrpcService {
                                 .await
                             {
                                 tracing::warn!("Failed to audit gRPC unknown tool: {}", e);
+                                // SECURITY (R275-GRPC-1): this path returns
+                                // approval_required_response and continues — an
+                                // approval is created and handed to the client. It
+                                // is the only shape in this file that does not deny
+                                // right after its audit, so it is the only one where
+                                // strict mode has anything left to enforce.
+                                if let Some(deny) =
+                                    self.audit_strict_deny(proto_req, "unknown tool")
+                                {
+                                    return deny;
+                                }
                             }
                             let approval_reason = "Unknown tool requires approval";
                             let containment_context =
@@ -1721,6 +1732,17 @@ impl McpGrpcService {
                                 .await
                             {
                                 tracing::warn!("Failed to audit gRPC untrusted tool: {}", e);
+                                // SECURITY (R275-GRPC-1): this path returns
+                                // approval_required_response and continues — an
+                                // approval is created and handed to the client. It
+                                // is the only shape in this file that does not deny
+                                // right after its audit, so it is the only one where
+                                // strict mode has anything left to enforce.
+                                if let Some(deny) =
+                                    self.audit_strict_deny(proto_req, "untrusted tool")
+                                {
+                                    return deny;
+                                }
                             }
                             let approval_reason = "Untrusted tool requires approval";
                             let containment_context =
