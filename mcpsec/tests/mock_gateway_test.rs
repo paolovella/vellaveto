@@ -354,3 +354,89 @@ async fn test_class_filter_against_mock() {
         "All A1 tests should pass against mock (403 → is_deny → has_injection)"
     );
 }
+
+// ── Deny-everything baseline ────────────────────────────────────────────────
+//
+// The mock above documents its own strategy as "Default: 403 Deny (passes
+// is_deny, has_injection, has_dlp, most custom checks)" plus 14 special cases.
+// That raises the question this test answers: how much of the benchmark is
+// satisfied by refusing every request?
+//
+// It matters because MCPSEC's pass conditions lean on denial. Of 105 tests, 57
+// use `is_deny` (403/429 or a Deny verdict), and the 27 detection checks
+// (`has_injection`, `has_dlp`) fall back to `is_deny` too. Exactly one test
+// (`is_clean`, A4.8) checks for a false positive. So a gateway that blocks
+// everything — useless, but perfectly "secure" by these checks — should score
+// well, and the score cannot distinguish it from one that blocks the right
+// things.
+//
+// This is a CHARACTERIZATION test: it records what the benchmark does today,
+// not what it should do. When MCPSEC grows a real over-blocking axis this test
+// SHOULD fail, and that failure is the signal the gap closed.
+
+/// A gateway that denies every request with 403 and nothing else.
+async fn deny_everything(Json(_payload): Json<Value>) -> impl IntoResponse {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "verdict": {"Deny": {"reason": "denied"}}
+        })),
+    )
+}
+
+#[tokio::test]
+async fn deny_everything_gateway_scores_high_which_the_benchmark_should_penalise() {
+    let app = Router::new().route("/api/evaluate", post(deny_everything));
+
+    let Some(listener) = bind_local_listener().await else {
+        return;
+    };
+    let addr = listener.local_addr().expect("failed to get address");
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("mock server failed");
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let config = BenchmarkConfig {
+        gateway: GatewayConfig {
+            base_url: format!("http://{addr}"),
+            evaluate_path: "/api/evaluate".to_string(),
+            auth_header: None,
+        },
+        format: OutputFormat::Json,
+        timeout_secs: 10,
+        concurrency: 1,
+        class_filter: vec![],
+    };
+
+    let result = run_benchmark(&config).await;
+
+    eprintln!("\n=== DENY-EVERYTHING GATEWAY (blocks 100% of traffic) ===");
+    eprintln!(
+        "  Overall: {:.1}% — Tier {}: {}",
+        result.overall_score, result.tier, result.tier_name
+    );
+    eprintln!(
+        "  Tests: {}/{} passed",
+        result.summary.passed, result.summary.total_tests
+    );
+    let failed: Vec<_> = result.attacks.iter().filter(|a| !a.passed).collect();
+    eprintln!("  Failed ({}):", failed.len());
+    for f in &failed {
+        eprintln!("    {} ({}) [{}]", f.attack_id, f.name, f.class);
+    }
+
+    assert_eq!(result.summary.total_tests, 105, "should run all 105 tests");
+
+    // Lower bound rather than an exact figure, so unrelated test additions do
+    // not churn it. The point is the magnitude, not the digit.
+    assert!(
+        result.summary.passed >= 80,
+        "recorded baseline: a deny-everything gateway scores {}/105. If this \
+         dropped below 80, MCPSEC gained a meaningful over-blocking penalty — \
+         update or delete this test and say so.",
+        result.summary.passed
+    );
+}
