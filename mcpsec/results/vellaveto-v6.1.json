@@ -1,0 +1,71 @@
+{
+  "framework": "MCPSEC",
+  "version": "1.2.0",
+  "timestamp": "2026-03-09T00:00:00Z",
+  "gateway": "vellaveto",
+  "gateway_version": "6.0.0",
+  "overall_score": 100,
+  "tier": 5,
+  "tier_name": "Hardened",
+  "properties": {
+    "P1": {
+      "score": 100,
+      "tests_passed": 19,
+      "tests_total": 19
+    },
+    "P2": {
+      "score": 100,
+      "tests_passed": 21,
+      "tests_total": 21
+    },
+    "P3": {
+      "score": 100,
+      "tests_passed": 3,
+      "tests_total": 3
+    },
+    "P4": {
+      "score": 100,
+      "tests_passed": 26,
+      "tests_total": 26
+    },
+    "P5": {
+      "score": 100,
+      "tests_passed": 16,
+      "tests_total": 16
+    },
+    "P6": {
+      "score": 100,
+      "tests_passed": 24,
+      "tests_total": 24
+    },
+    "P7": {
+      "score": 100,
+      "tests_passed": 7,
+      "tests_total": 7
+    },
+    "P8": {
+      "score": 100,
+      "tests_passed": 5,
+      "tests_total": 5
+    },
+    "P9": {
+      "score": 100,
+      "tests_passed": 25,
+      "tests_total": 25
+    },
+    "P10": {
+      "score": 100,
+      "tests_passed": 8,
+      "tests_total": 8
+    }
+  },
+  "summary": {
+    "total_tests": 105,
+    "passed": 105,
+    "failed": 0,
+    "skipped": 0
+  },
+  "note": "Reference results for Vellaveto v6.0.0 (248 audit rounds). Run 'cargo run -p mcpsec -- --target http://localhost:3000' against a live instance to verify.",
+  "superseded_by": "vellaveto-v7.0.json",
+  "reproducibility": "NOT REPRODUCIBLE. This result records no config, no command and no commit, and no CI job regenerates it. Re-running the benchmark on 2026-09-10 against a live server across all 18 shipped presets did not reproduce 100/100 on any of them; the best was the vault preset at 94.9% security. Retained as a historical record only \u2014 cite vellaveto-v7.0.json, which records the config and commit that produced it."
+}

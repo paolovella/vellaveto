@@ -1,0 +1,99 @@
+{
+  "framework": "MCPSEC",
+  "version": "1.2.0",
+  "timestamp": "2026-09-10T16:55:15Z",
+  "gateway": "vellaveto",
+  "gateway_version": "\u0001",
+  "reproduction": {
+    "config": "examples/presets/vault.toml",
+    "config_sha256": "72600a7af14233dd98c88bcf768a3f27d7ac91e0267e3e04b66eeb0d753d0aa5",
+    "vellaveto_commit": "83fb8c5b7215ac7988d81b4c002b568fe0d689e8",
+    "server_command": "vellaveto serve --port 3000 --config examples/presets/vault.toml --allow-anonymous",
+    "benchmark_command": "cargo run -p mcpsec -- --target http://localhost:3000 --format json",
+    "endpoint": "/api/evaluate",
+    "note": "Run both commands on the commit above to reproduce. Earlier published results recorded no config and could not be reproduced."
+  },
+  "overall_score": 94.875,
+  "availability_score": 63.63636363636363,
+  "tier": 4,
+  "tier_name": "Comprehensive",
+  "properties": [
+    {
+      "property_id": "P1",
+      "name": "Tool-Level Access Control",
+      "score": 100.0,
+      "tests_passed": 19,
+      "tests_total": 19
+    },
+    {
+      "property_id": "P2",
+      "name": "Parameter Constraint Enforcement",
+      "score": 100.0,
+      "tests_passed": 21,
+      "tests_total": 21
+    },
+    {
+      "property_id": "P3",
+      "name": "Priority Monotonicity",
+      "score": 100.0,
+      "tests_passed": 3,
+      "tests_total": 3
+    },
+    {
+      "property_id": "P4",
+      "name": "Injection Resistance",
+      "score": 100.0,
+      "tests_passed": 26,
+      "tests_total": 26
+    },
+    {
+      "property_id": "P5",
+      "name": "Schema Integrity",
+      "score": 75.0,
+      "tests_passed": 12,
+      "tests_total": 16
+    },
+    {
+      "property_id": "P6",
+      "name": "Response Confidentiality",
+      "score": 83.33333333333334,
+      "tests_passed": 20,
+      "tests_total": 24
+    },
+    {
+      "property_id": "P7",
+      "name": "Audit Immutability",
+      "score": 100.0,
+      "tests_passed": 7,
+      "tests_total": 7
+    },
+    {
+      "property_id": "P8",
+      "name": "Delegation Monotonicity",
+      "score": 100.0,
+      "tests_passed": 5,
+      "tests_total": 5
+    },
+    {
+      "property_id": "P9",
+      "name": "Unicode Normalization",
+      "score": 100.0,
+      "tests_passed": 25,
+      "tests_total": 25
+    },
+    {
+      "property_id": "P10",
+      "name": "Temporal Consistency",
+      "score": 87.5,
+      "tests_passed": 7,
+      "tests_total": 8
+    }
+  ],
+  "summary": {
+    "total_tests": 116,
+    "passed": 103,
+    "failed": 13,
+    "skipped": 0
+  },
+  "note": "Reference result for Vellaveto \u0001 measured against the shipped vault preset. Two axes: overall_score is security across P1-P10; availability_score is the share of A17 legitimate-traffic checks allowed through. A gateway that denies everything scores highly on the first and zero on the second, which is why they are reported separately. The 9 security failures are configuration and surface, not absent capability: A10.4 needs rate limits, which vault does not configure; A14.1-A14.4 need schema_poisoning.enabled, which defaults to false; A13.1-A13.4 are cross-call secret splitting, a session-scoped defence that lives in the MCP relay and cannot apply to the stateless /api/evaluate endpoint this benchmark targets. A preset enabling rate limits and schema_poisoning would score higher."
+}

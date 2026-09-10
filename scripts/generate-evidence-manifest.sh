@@ -204,7 +204,7 @@ cat > "$OUTPUT" <<JSON
   "ci_run_url": "$(json_escape "$ci_run_url")",
   "generated_at": "$(json_escape "$generated_at")",
   "count_methods": {
-    "rust_tests": "source attributes in canonical workspace crates unless EVIDENCE_RUST_TESTS is set",
+    "rust_tests": "source attributes in canonical workspace crates unless EVIDENCE_RUST_TESTS is set; counts every #[test] in the tree including feature-gated ones, all of which the ci.yml feature-matrix job executes",
     "sdk_tests": "source test declarations across Python, TypeScript, Java, and Go SDKs unless EVIDENCE_SDK_TESTS is set",
     "formal": "source inventory unless EVIDENCE_* formal overrides are set"
   }
@@ -225,6 +225,11 @@ cat > "$DOC_SUMMARY" <<MD
 | Coq theorems | $coq_theorems |
 | Alloy assertions | $alloy_assertions |
 | Formal evidence items tracked by manifest | $formal_evidence_items |
+
+Test counts are source-attribute inventories, not counts of tests that
+passed in a given run. Every counted Rust test is executed by CI: those
+behind a non-default feature run in the \`feature-matrix\` job in
+\`.github/workflows/ci.yml\`, the rest in the main workspace test job.
 <!-- VELLAVETO:EVIDENCE:END -->
 MD
 

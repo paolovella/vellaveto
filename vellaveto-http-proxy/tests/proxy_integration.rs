@@ -8523,3 +8523,103 @@ async fn ws_unknown_tool_approval_persists_clamped_transport_provenance() {
 async fn ws_untrusted_tool_approval_persists_clamped_transport_provenance() {
     assert_ws_tool_approval_persists_clamped_transport_provenance("untrusted_tool", true).await;
 }
+
+// ════════════════════════════════
+// STRICT AUDIT MODE (FIND-CREATIVE-003 / R272-HTTP-1)
+//
+// `audit.strict_mode` denies a request whose audit entry could not be written.
+// handlers.rs honoured it at 8 of 47 audit-failure sites; the rest logged and
+// carried on. Nothing here exercised it at all — every harness sets
+// `audit_strict_mode: false`.
+// ════════════════════════════════
+
+/// Point the audit log at a directory so every append fails with EISDIR.
+/// Portable for root and non-root, unlike chmod-based approaches.
+fn break_audit(state: &mut ProxyState, tmp: &TempDir, strict: bool) {
+    let blocked = tmp.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+    state.audit = Arc::new(AuditLogger::new(blocked));
+    state.audit_strict_mode = strict;
+}
+
+async fn post_tool_call(app: axum::Router, tool: &str) -> axum::response::Response {
+    let body = serde_json::to_string(&json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {"name": tool, "arguments": {"path": "/tmp/x"}}
+    }))
+    .unwrap();
+    app.oneshot(
+        Request::post("/mcp")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn tool_call_denied_when_audit_fails_in_strict_mode() {
+    let Some(upstream_url) = start_mock_upstream().await else {
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let mut state = build_test_state(&upstream_url, &tmp);
+    break_audit(&mut state, &tmp, true);
+
+    let resp = post_tool_call(build_router(state), "bash").await;
+    let json = json_body(resp).await;
+
+    assert_eq!(
+        json["error"]["code"], -32000,
+        "strict mode must deny a decision it could not record, got: {json}"
+    );
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Audit logging failed"),
+        "the client must be told why, got: {json}"
+    );
+}
+
+#[tokio::test]
+async fn tool_call_proceeds_when_audit_fails_without_strict_mode() {
+    let Some(upstream_url) = start_mock_upstream().await else {
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let mut state = build_test_state(&upstream_url, &tmp);
+    break_audit(&mut state, &tmp, false);
+
+    let resp = post_tool_call(build_router(state), "read_file").await;
+    let json = json_body(resp).await;
+
+    assert!(
+        json.get("error").is_none() || json["error"].is_null(),
+        "the documented default is warn-and-continue, got: {json}"
+    );
+}
+
+/// Guards against denying for the wrong reason: with a working audit log the
+/// same request must succeed, so the denial above is the audit failure and not
+/// the flag itself.
+#[tokio::test]
+async fn tool_call_succeeds_in_strict_mode_when_audit_works() {
+    let Some(upstream_url) = start_mock_upstream().await else {
+        return;
+    };
+    let tmp = TempDir::new().unwrap();
+    let mut state = build_test_state(&upstream_url, &tmp);
+    state.audit_strict_mode = true;
+
+    let resp = post_tool_call(build_router(state), "read_file").await;
+    let json = json_body(resp).await;
+
+    assert!(
+        json.get("error").is_none() || json["error"].is_null(),
+        "strict mode must not deny when the audit write succeeds, got: {json}"
+    );
+}

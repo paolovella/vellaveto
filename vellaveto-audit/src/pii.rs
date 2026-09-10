@@ -146,8 +146,40 @@ struct NamedPiiRegex {
     luhn_postfilter: bool,
 }
 
-/// Default built-in PII detection patterns.
+/// Categories excluded from audit redaction but kept for outbound sanitization.
+///
+/// A file path is PII when it leaves the machine — `/Users/jane/medical/...`
+/// names a person and their business — so the Consumer Shield must replace it
+/// before a provider sees it. It is the opposite in an audit log: the path *is*
+/// the record. An entry reading `file.read "[REDACTED]"` documents that
+/// something happened to something, which is not an audit trail. The repo
+/// asserts this directly — `owasp_mcp_top10.rs` fails with "Parameters must be
+/// logged" — and OWASP MCP09 depends on it.
+///
+/// So the pattern set is not one set. `default_patterns()` is what audit
+/// redacts; `sanitizer_patterns()` adds these on top for the Shield.
+const SANITIZER_ONLY_CATEGORIES: &[&str] = &["path"];
+
+/// Built-in PII patterns used for **audit redaction**.
+///
+/// Excludes [`SANITIZER_ONLY_CATEGORIES`]; see there for why.
 fn default_patterns() -> Vec<NamedPiiRegex> {
+    all_patterns()
+        .into_iter()
+        .filter(|p| !SANITIZER_ONLY_CATEGORIES.contains(&p.name))
+        .collect()
+}
+
+/// Built-in PII patterns used for **outbound sanitization** by the Shield.
+///
+/// The full set, including the categories audit deliberately preserves.
+fn sanitizer_patterns() -> Vec<NamedPiiRegex> {
+    all_patterns()
+}
+
+/// Every built-in pattern. Callers choose a profile above rather than using
+/// this directly, so the audit/sanitizer distinction cannot be lost by accident.
+fn all_patterns() -> Vec<NamedPiiRegex> {
     let patterns: &[(&str, &str, bool)] = &[
         (
             "email",
@@ -172,6 +204,30 @@ fn default_patterns() -> Vec<NamedPiiRegex> {
             false,
         ),
         ("aws_key_id", r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b", false),
+        // IPv6, so the documented "IPs" coverage is not IPv4-only. Deliberately
+        // narrow: full 8-group form and the common `::`-compressed forms, each
+        // needing at least two groups. A permissive IPv6 regex matches things
+        // like "1::" inside ordinary text, and over-matching here corrupts
+        // messages the user did want sent.
+        (
+            "ipv6",
+            r"(?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}|(?:[0-9A-Fa-f]{1,4}:){1,6}:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*",
+            false,
+        ),
+        // File paths — the case the Consumer Shield documentation is built on,
+        // and which nothing matched before.
+        //
+        // Over-matching is the real risk, not under-matching: a greedy path
+        // regex swallows prose containing slashes and mangles text the user
+        // intended to send, and a sanitizer that garbles messages gets turned
+        // off. Hence at least two segments, so a bare "/tmp" or an "and/or"
+        // does not match, and no whitespace inside a path.
+        (
+            "path",
+            // POSIX absolute (/a/b), home-relative (~/a/b), Windows (C:\a\b).
+            r"(?:~|/)(?:[A-Za-z0-9._\-]+/)+[A-Za-z0-9._\-]*|\b[A-Za-z]:\\(?:[^\\/:*?<>|\r\n]+\\)+[^\\/:*?<>|\r\n]*",
+            false,
+        ),
     ];
 
     patterns
@@ -246,6 +302,20 @@ impl PiiScanner {
     /// Invalid custom patterns and patterns that fail ReDoS safety validation
     /// are logged via `tracing::warn!` and skipped.
     pub fn new(custom: &[CustomPiiPattern]) -> Self {
+        Self::with_profile(custom, default_patterns())
+    }
+
+    /// Create a scanner for **outbound sanitization** (the Consumer Shield).
+    ///
+    /// Same as [`PiiScanner::new`] plus the categories audit deliberately
+    /// preserves — file paths above all. Use this when the text is leaving the
+    /// machine; use `new` when the text is being written to an audit log. See
+    /// [`SANITIZER_ONLY_CATEGORIES`].
+    pub fn new_for_sanitizer(custom: &[CustomPiiPattern]) -> Self {
+        Self::with_profile(custom, sanitizer_patterns())
+    }
+
+    fn with_profile(custom: &[CustomPiiPattern], default_patterns: Vec<NamedPiiRegex>) -> Self {
         let mut custom_patterns = Vec::new();
         for pat in custom {
             // R2-3: Validate for ReDoS before compiling
@@ -267,7 +337,7 @@ impl PiiScanner {
             }
         }
         Self {
-            default_patterns: default_patterns(),
+            default_patterns,
             custom_patterns,
         }
     }
@@ -307,9 +377,24 @@ impl PiiScanner {
 
     /// Find all PII matches in the input, returning spans with categories.
     ///
-    /// Results are sorted by position (start byte offset). For credit card
-    /// patterns, a Luhn check post-filter is applied — only valid card numbers
-    /// are included.
+    /// Results are sorted by position (start byte offset) and are guaranteed
+    /// **non-overlapping**. For credit card patterns, a Luhn check post-filter
+    /// is applied — only valid card numbers are included.
+    ///
+    /// # Overlap resolution
+    ///
+    /// Several patterns can match the same text: a file path can contain an IP
+    /// address, and a custom pattern can duplicate a built-in one. Callers
+    /// substitute matches by walking spans in order, so overlapping spans are
+    /// not merely redundant — they are unusable. `QuerySanitizer::sanitize`
+    /// slices `input[last_end..m.start]`, which panics outright when a later
+    /// match starts before the previous one ended.
+    ///
+    /// Overlaps are therefore resolved here rather than left to each caller:
+    /// the longest match at the earliest position wins, since the longer span
+    /// is the more specific reading (a whole path rather than the IP inside
+    /// it), and it redacts strictly more. Ties break on category name so the
+    /// result is deterministic regardless of pattern registration order.
     pub fn find_matches(&self, input: &str) -> Vec<PiiMatch> {
         let mut matches = Vec::new();
 
@@ -338,9 +423,27 @@ impl PiiScanner {
             }
         }
 
-        // Sort by position for deterministic replacement order
-        matches.sort_by_key(|m| m.start);
-        matches
+        // Earliest start first; at the same start, longest span first; then
+        // category name so equal spans resolve deterministically.
+        matches.sort_by(|a, b| {
+            a.start
+                .cmp(&b.start)
+                .then((b.end - b.start).cmp(&(a.end - a.start)))
+                .then(a.category.cmp(&b.category))
+        });
+
+        // Greedily keep non-overlapping matches. Because the list is ordered
+        // longest-first at each start, the first match kept at any position is
+        // the most specific one available there.
+        let mut deduped: Vec<PiiMatch> = Vec::with_capacity(matches.len());
+        let mut next_free = 0usize;
+        for m in matches {
+            if m.start >= next_free {
+                next_free = m.end;
+                deduped.push(m);
+            }
+        }
+        deduped
     }
 
     /// Check if any PII pattern matches the input string.
@@ -689,5 +792,217 @@ mod tests {
             .filter(|m| m.category == "credit_card")
             .collect();
         assert!(!cc_matches.is_empty(), "Valid Luhn should be included");
+    }
+
+    // ── File paths: the case the Consumer Shield docs are built on ──────
+
+    fn categories_at(scanner: &PiiScanner, input: &str) -> Vec<String> {
+        scanner
+            .find_matches(input)
+            .into_iter()
+            .map(|m| m.category)
+            .collect()
+    }
+
+    #[test]
+    fn test_readme_consumer_shield_example_is_reproducible() {
+        // The exact string the README opens the Consumer Shield section with.
+        // Before a path pattern existed, this path was sent to the provider
+        // verbatim — the outcome that section promises to prevent.
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
+        let matches =
+            scanner.find_matches("Read my medical records at /home/alice/health/lab-results.pdf");
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected exactly the path, got {matches:?}"
+        );
+        assert_eq!(matches[0].category, "path");
+        assert_eq!(matches[0].text, "/home/alice/health/lab-results.pdf");
+    }
+
+    #[test]
+    fn test_path_variants_are_detected() {
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
+        for input in [
+            "/home/alice/health/lab-results.pdf",
+            "~/Documents/taxes/2025.pdf",
+            "/var/log/nginx/access.log",
+            r"C:\Users\alice\Documents\notes.txt",
+        ] {
+            let cats = categories_at(&scanner, input);
+            assert!(
+                cats.contains(&"path".to_string()),
+                "{input} should match the path pattern, got {cats:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_path_pattern_does_not_swallow_ordinary_text() {
+        // Over-matching is the real risk: a sanitizer that mangles ordinary
+        // prose gets turned off, which is a security failure, not a cosmetic
+        // one. None of these should be treated as a path.
+        let scanner = PiiScanner::new(&[]);
+        for input in [
+            "use and/or as needed",
+            "the ratio was 3/4 overall",
+            "see /tmp for details",
+            "read the file",
+            "50/50 split",
+        ] {
+            let cats = categories_at(&scanner, input);
+            assert!(
+                !cats.contains(&"path".to_string()),
+                "{input:?} must NOT match the path pattern, got {cats:?}"
+            );
+        }
+    }
+
+    // ── IPv6, so the documented "IPs" coverage is honest ────────────────
+
+    #[test]
+    fn test_ipv6_is_detected() {
+        let scanner = PiiScanner::new(&[]);
+        for input in [
+            "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+            "2001:db8::8a2e:370:7334",
+        ] {
+            let cats = categories_at(&scanner, input);
+            assert!(
+                cats.contains(&"ipv6".to_string()),
+                "{input} should match ipv6, got {cats:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_ipv6_pattern_does_not_match_ordinary_text() {
+        let scanner = PiiScanner::new(&[]);
+        for input in ["meeting at 10:30", "ratio 1:2", "see chapter 3:14"] {
+            let cats = categories_at(&scanner, input);
+            assert!(
+                !cats.contains(&"ipv6".to_string()),
+                "{input:?} must NOT match ipv6, got {cats:?}"
+            );
+        }
+    }
+
+    // ── Overlap resolution ──────────────────────────────────────────────
+
+    #[test]
+    fn test_matches_never_overlap() {
+        // Callers substitute by walking spans in order and slicing
+        // input[last_end..m.start]; an overlapping pair makes that a reversed
+        // range, which panics. This held before any custom pattern was added
+        // and is what makes the guarantee load-bearing rather than tidy.
+        let scanner = PiiScanner::new(&[CustomPiiPattern {
+            name: "dup".to_string(),
+            pattern: r"alice@example\.com".to_string(),
+        }]);
+        let matches = scanner.find_matches("mail alice@example.com now");
+        assert_eq!(
+            matches.len(),
+            1,
+            "duplicate spans must collapse to one, got {matches:?}"
+        );
+
+        let mut next_free = 0;
+        for m in &matches {
+            assert!(m.start >= next_free, "overlapping match: {matches:?}");
+            next_free = m.end;
+        }
+    }
+
+    #[test]
+    fn test_path_containing_an_ip_yields_one_match() {
+        // A path can contain an IP. The longer, more specific span wins, and
+        // the result must still be non-overlapping.
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
+        let matches = scanner.find_matches("/var/backups/192.168.1.10/db.sql");
+        assert_eq!(matches.len(), 1, "expected one span, got {matches:?}");
+        assert_eq!(matches[0].category, "path");
+        assert_eq!(matches[0].text, "/var/backups/192.168.1.10/db.sql");
+    }
+
+    #[test]
+    fn test_overlap_resolution_is_deterministic() {
+        // Equal spans from different patterns must resolve the same way every
+        // time, regardless of registration order.
+        let scanner = PiiScanner::new(&[CustomPiiPattern {
+            name: "zzz_dup".to_string(),
+            pattern: r"alice@example\.com".to_string(),
+        }]);
+        let first: Vec<(usize, usize, String)> = scanner
+            .find_matches("alice@example.com")
+            .into_iter()
+            .map(|m| (m.start, m.end, m.category))
+            .collect();
+        for _ in 0..20 {
+            let again: Vec<(usize, usize, String)> = scanner
+                .find_matches("alice@example.com")
+                .into_iter()
+                .map(|m| (m.start, m.end, m.category))
+                .collect();
+            assert_eq!(again, first);
+        }
+    }
+
+    // ── Audit vs sanitizer pattern profiles ─────────────────────────────
+    //
+    // These pin the distinction itself. Collapsing the two profiles back into
+    // one set is an easy, quiet mistake, and it breaks whichever side loses:
+    // audit stops recording what was accessed, or the Shield starts leaking
+    // paths to providers.
+
+    const AUDIT_MUST_PRESERVE: &str = "/etc/hosts";
+
+    #[test]
+    fn test_audit_profile_preserves_file_paths() {
+        // An audit entry reading `file.read "[REDACTED]"` is not an audit
+        // trail. owasp_mcp_top10.rs asserts this as "Parameters must be
+        // logged", and OWASP MCP09 depends on it.
+        let scanner = PiiScanner::new(&[]);
+        assert_eq!(
+            scanner.redact_string(AUDIT_MUST_PRESERVE),
+            AUDIT_MUST_PRESERVE,
+            "audit redaction must not touch file paths — the path is the record"
+        );
+        assert!(
+            !categories_at(&scanner, AUDIT_MUST_PRESERVE).contains(&"path".to_string()),
+            "audit profile must not carry the `path` pattern"
+        );
+    }
+
+    #[test]
+    fn test_sanitizer_profile_redacts_file_paths() {
+        // The same path leaving the machine is PII: it names a person and
+        // their business to whoever receives it.
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
+        assert!(
+            categories_at(&scanner, AUDIT_MUST_PRESERVE).contains(&"path".to_string()),
+            "sanitizer profile must detect file paths"
+        );
+    }
+
+    #[test]
+    fn test_profiles_differ_only_by_sanitizer_only_categories() {
+        // Guards against the profiles drifting apart for any other reason: a
+        // pattern added to one and forgotten in the other would show up here.
+        let audit: Vec<&str> = default_patterns().iter().map(|p| p.name).collect();
+        let sanitizer: Vec<&str> = sanitizer_patterns().iter().map(|p| p.name).collect();
+        let only_in_sanitizer: Vec<&str> = sanitizer
+            .iter()
+            .filter(|n| !audit.contains(n))
+            .copied()
+            .collect();
+        assert_eq!(
+            only_in_sanitizer, SANITIZER_ONLY_CATEGORIES,
+            "the profiles must differ by exactly SANITIZER_ONLY_CATEGORIES"
+        );
+        assert!(
+            audit.iter().all(|n| sanitizer.contains(n)),
+            "every audit pattern must also be in the sanitizer profile"
+        );
     }
 }

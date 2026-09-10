@@ -40,7 +40,7 @@ The harness produces a JSON report with:
 - **Tier** (0-5) — from the overall score *and* the per-property floors that
   Tiers 4 and 5 require; see [SCORING.md](SCORING.md)
 - **Per-property scores** (P1-P10, each 0-100%)
-- **Per-attack results** (105 tests, each pass/fail with latency)
+- **Per-attack results** (116 tests, each pass/fail with latency)
 
 **Read the per-property scores, not just the overall.** A weighted average can
 be high while one property fails outright — the floors demote such a result, but
