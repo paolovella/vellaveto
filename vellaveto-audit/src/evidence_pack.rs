@@ -626,8 +626,15 @@ pub fn verify_evidence_pack_signature(pack: &EvidencePack) -> Result<bool, crate
     let verifying_key = ed25519_dalek::VerifyingKey::from_bytes(&vk_array)
         .map_err(|e| crate::AuditError::Validation(format!("invalid verifying key: {e}")))?;
 
+    // SECURITY (DOC-CRED-2): Try the domain-separated content first, then fall
+    // back to the pre-domain-separation form so packs signed before the change
+    // keep verifying. Signing always uses the domain-separated form.
     let content = pack.signing_content();
-    Ok(verifying_key.verify(&content, &signature).is_ok())
+    if verifying_key.verify(&content, &signature).is_ok() {
+        return Ok(true);
+    }
+    let undomained = pack.undomained_signing_content();
+    Ok(verifying_key.verify(&undomained, &signature).is_ok())
 }
 
 // ── HTML Renderer ────────────────────────────────────────────────────────────

@@ -124,7 +124,18 @@ pub fn calculate_overall_score(properties: &[PropertyScore]) -> f64 {
     weighted_sum
 }
 
-/// Convert overall score to tier (0-5).
+/// Minimum per-property score required for Tier 5.
+const TIER5_PROPERTY_FLOOR: f64 = 90.0;
+
+/// Minimum per-property score required for Tier 4.
+const TIER4_PROPERTY_FLOOR: f64 = 70.0;
+
+/// Convert overall score to tier (0-5) from the weighted average alone.
+///
+/// The overall score is a weighted average, so a gateway that fails every test
+/// in one property can still reach a high tier here. Prefer [`assign_tier`],
+/// which additionally enforces the per-property floors that Tiers 4 and 5
+/// require; this function is the raw band lookup it builds on.
 pub fn score_to_tier(score: f64) -> u8 {
     match score as u32 {
         0..=19 => 0,
@@ -134,6 +145,41 @@ pub fn score_to_tier(score: f64) -> u8 {
         80..=94 => 4,
         _ => 5,
     }
+}
+
+/// Assign a tier from the overall score *and* the per-property breakdown.
+///
+/// Tiers 4 and 5 claim coverage across every property, which a weighted average
+/// cannot establish on its own: 20% of the weight can be a single property at
+/// zero. Both tiers therefore also require a per-property floor — 90% for
+/// Tier 5, 70% for Tier 4 — and a gateway that clears the overall threshold but
+/// misses the floor is demoted one tier at a time until it satisfies the band
+/// it lands in.
+///
+/// Properties with no mapped tests (`tests_total == 0`) score 0 but are not
+/// counted against the floor, since the suite simply did not exercise them.
+pub fn assign_tier(score: f64, properties: &[PropertyScore]) -> u8 {
+    let mut tier = score_to_tier(score);
+
+    let min_property_score = properties
+        .iter()
+        .filter(|p| p.tests_total > 0)
+        .map(|p| p.score)
+        .fold(f64::INFINITY, f64::min);
+
+    // No exercised properties: the floors are vacuous, nothing to demote on.
+    if !min_property_score.is_finite() {
+        return tier;
+    }
+
+    if tier >= 5 && min_property_score < TIER5_PROPERTY_FLOOR {
+        tier = 4;
+    }
+    if tier >= 4 && min_property_score < TIER4_PROPERTY_FLOOR {
+        tier = 3;
+    }
+
+    tier
 }
 
 /// Get the name for a tier.
@@ -189,6 +235,88 @@ mod tests {
         assert_eq!(score_to_tier(94.0), 4);
         assert_eq!(score_to_tier(95.0), 5);
         assert_eq!(score_to_tier(100.0), 5);
+    }
+
+    /// Build a property list where every property has `tests_total` tests and
+    /// scores `score`, except the first, which scores `first_score`.
+    fn props_with_min(first_score: f64, score: f64) -> Vec<PropertyScore> {
+        PROPERTY_NAMES
+            .iter()
+            .enumerate()
+            .map(|(i, (pid, name))| PropertyScore {
+                property_id: pid.to_string(),
+                name: name.to_string(),
+                score: if i == 0 { first_score } else { score },
+                tests_passed: 10,
+                tests_total: 10,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_assign_tier_uniform_coverage_keeps_band() {
+        // 100% everywhere: floors are satisfied, Tier 5 stands.
+        assert_eq!(assign_tier(100.0, &props_with_min(100.0, 100.0)), 5);
+        // 95% overall with every property at 95: above the 90 floor.
+        assert_eq!(assign_tier(95.0, &props_with_min(95.0, 95.0)), 5);
+    }
+
+    #[test]
+    fn test_assign_tier_demotes_tier5_when_a_property_is_below_floor() {
+        // The failure this floor exists to catch: a near-perfect weighted
+        // average masking one property that is almost entirely failing.
+        let props = props_with_min(20.0, 100.0);
+        assert_eq!(score_to_tier(96.0), 5, "raw band would say Hardened");
+        assert_eq!(
+            assign_tier(96.0, &props),
+            3,
+            "a property at 20% is below both the 90 and 70 floors"
+        );
+    }
+
+    #[test]
+    fn test_assign_tier_demotes_tier5_to_tier4_just_under_floor() {
+        let props = props_with_min(89.0, 100.0);
+        assert_eq!(assign_tier(97.0, &props), 4);
+    }
+
+    #[test]
+    fn test_assign_tier_demotes_tier4_when_below_tier4_floor() {
+        let props = props_with_min(69.0, 100.0);
+        assert_eq!(score_to_tier(85.0), 4);
+        assert_eq!(assign_tier(85.0, &props), 3);
+    }
+
+    #[test]
+    fn test_assign_tier_floor_at_exact_boundaries() {
+        // Floors are inclusive: exactly at the floor is not a demotion.
+        assert_eq!(assign_tier(96.0, &props_with_min(90.0, 100.0)), 5);
+        assert_eq!(assign_tier(85.0, &props_with_min(70.0, 100.0)), 4);
+    }
+
+    #[test]
+    fn test_assign_tier_does_not_promote_low_tiers() {
+        // Floors only demote. A poor overall score stays where it is even when
+        // every exercised property is uniform.
+        assert_eq!(assign_tier(50.0, &props_with_min(50.0, 50.0)), 2);
+        assert_eq!(assign_tier(10.0, &props_with_min(10.0, 10.0)), 0);
+    }
+
+    #[test]
+    fn test_assign_tier_ignores_unexercised_properties() {
+        // A property with no mapped tests scores 0 but must not drag the tier
+        // down — the suite simply did not test it.
+        let mut props = props_with_min(100.0, 100.0);
+        props[3].score = 0.0;
+        props[3].tests_passed = 0;
+        props[3].tests_total = 0;
+        assert_eq!(assign_tier(100.0, &props), 5);
+    }
+
+    #[test]
+    fn test_assign_tier_with_no_properties_falls_back_to_band() {
+        assert_eq!(assign_tier(100.0, &[]), 5);
+        assert_eq!(assign_tier(85.0, &[]), 4);
     }
 
     #[test]

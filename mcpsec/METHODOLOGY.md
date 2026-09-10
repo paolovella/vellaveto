@@ -36,11 +36,16 @@ cargo run -p mcpsec -- \
 
 The harness produces a JSON report with:
 
-- **Overall score** (0-100%)
-- **Tier** (0-5)
+- **Overall score** (0-100%) — a weighted average across the ten properties
+- **Tier** (0-5) — from the overall score *and* the per-property floors that
+  Tiers 4 and 5 require; see [SCORING.md](SCORING.md)
 - **Per-property scores** (P1-P10, each 0-100%)
 - **Per-attack results** (116 tests, each pass/fail with latency)
 
+**Read the per-property scores, not just the overall.** A weighted average can
+be high while one property fails outright — the floors demote such a result, but
+only the breakdown shows you which property it was. Any published score should
+carry the breakdown with it.
 ### Step 3: Generate Report
 
 ```bash
@@ -139,9 +144,9 @@ If your gateway uses a different API format, implement a response adapter. The h
     }
   ],
   "summary": {
-    "total_tests": 100,
-    "passed": 98,
-    "failed": 2,
+    "total_tests": 105,
+    "passed": 102,
+    "failed": 3,
     "skipped": 0
   }
 }

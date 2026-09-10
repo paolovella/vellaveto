@@ -166,6 +166,77 @@ fn test_session_max_fail_closed() {
     assert!(result.is_err());
 }
 
+/// JSON-RPC allows several requests in flight at once, so a response to an
+/// earlier request can arrive after a later one has already gone out. The
+/// placeholder binding must be against the session's whole history, not just its
+/// most recent message, or pipelined responses fail closed and the proxy breaks.
+#[test]
+fn test_json_desanitize_allows_out_of_order_pipelined_responses() {
+    let isolator = SessionIsolator::new();
+
+    // Request A goes out, then request B, before either response arrives.
+    let a = isolator
+        .sanitize_json_in_session("s1", &serde_json::json!({"id": 1, "q": "a@example.com"}))
+        .unwrap();
+    let _b = isolator
+        .sanitize_json_in_session("s1", &serde_json::json!({"id": 2, "q": "b@example.com"}))
+        .unwrap();
+
+    // Response to A arrives second. Its placeholder is not in the most recent
+    // outbound message (B), but this session did emit it.
+    let restored = isolator
+        .desanitize_json_in_session("s1", &serde_json::json!({"echo": a["q"].clone()}))
+        .expect("a pipelined response must not fail closed");
+    assert_eq!(
+        restored["echo"].as_str().unwrap(),
+        "a@example.com",
+        "response to the earlier request must still restore"
+    );
+}
+
+/// The probing attack the binding check exists for: a server echoing a
+/// well-formed placeholder this session never minted must not get anything back,
+/// and must not be silently treated as restorable.
+#[test]
+fn test_json_desanitize_rejects_placeholders_never_emitted() {
+    let isolator = SessionIsolator::new();
+    isolator
+        .sanitize_json_in_session("s1", &serde_json::json!({"q": "real@example.com"}))
+        .unwrap();
+
+    let forged = serde_json::json!({"echo": "[PII_EMAIL_DEADBEEFDEADBEEF]"});
+    let out = isolator.desanitize_json_in_session("s1", &forged).unwrap();
+    assert_eq!(
+        out["echo"].as_str().unwrap(),
+        "[PII_EMAIL_DEADBEEFDEADBEEF]",
+        "a placeholder this session never emitted must pass through, not resolve"
+    );
+    assert!(!out["echo"].as_str().unwrap().contains("real@example.com"));
+}
+
+/// Custom operator patterns must survive the switch to per-session isolation --
+/// the isolator previously hardcoded PiiScanner::default(), which would have
+/// silently dropped them.
+#[test]
+fn test_session_isolator_honours_custom_patterns() {
+    let isolator = SessionIsolator::with_custom_patterns(vec![vellaveto_audit::CustomPiiPattern {
+        name: "employee_id".to_string(),
+        pattern: r"EMP-\d{6}".to_string(),
+    }]);
+
+    let out = isolator
+        .sanitize_json_in_session("s1", &serde_json::json!({"note": "see EMP-123456"}))
+        .unwrap();
+    let text = out["note"].as_str().unwrap();
+    assert!(
+        !text.contains("EMP-123456"),
+        "custom pattern must be applied, got {text}"
+    );
+
+    let restored = isolator.desanitize_json_in_session("s1", &out).unwrap();
+    assert_eq!(restored["note"].as_str().unwrap(), "see EMP-123456");
+}
+
 #[test]
 fn test_session_independent_pii_maps() {
     let isolator = SessionIsolator::new();

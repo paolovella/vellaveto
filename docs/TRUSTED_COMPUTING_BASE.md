@@ -3,7 +3,7 @@
 > **Version:** 3.0.0
 > **Date:** 2026-03-06
 > **Status:** Formal foundation current (882+ verification instances across Verus, Kani, TLA+, Coq, Lean 4, and Alloy)
-> **Plan:** See [FORMAL_VERIFICATION_PLAN.md](FORMAL_VERIFICATION_PLAN.md) for the proof-program detail and [../ROADMAP.md](../ROADMAP.md) for 2026 execution sequencing
+> **Plan:** See [formal/README.md](../formal/README.md) for the proof-program detail and [../ROADMAP.md](../ROADMAP.md) for 2026 execution sequencing
 
 This document defines what Vellaveto formally verifies, what it trusts, and
 what it does not verify. It is the authoritative reference for all "formally
@@ -462,7 +462,7 @@ These are external dependencies whose correctness is assumed, not verified.
 |-----------|---------|-------------|--------------|
 | **rustc / LLVM** | 1.88.0+ | Compiler correctness assumed | Ferrocene qualified to ISO 26262 ASIL D (upstream unqualified) |
 | **rustls** | 0.23.x | TLS implementation | ISRG-funded, NCC Group (2023), Cure53 (2024) |
-| **ed25519-dalek** | 4.x | Signature verification | Quarkslab (2023) |
+| **ed25519-dalek** | 4.x | Deterministic EdDSA — no per-signature RNG, so a repeated or biased nonce cannot disclose the signing key. Rationale and trade-offs (not FIPS-approved, not post-quantum, no domain separation) in [Security Model](SECURITY_MODEL.md#why-ed25519). | Quarkslab (2023) |
 | **aws-lc-sys** | 0.38.0 | Cryptographic primitives (FIPS 204 ML-DSA-65) | AWS-funded, FIPS 140-3 validated |
 | **aho-corasick** | 1.x | Multi-pattern matching (injection scanner) | Extensively fuzzed by BurntSushi |
 | **ring** | 0.17.x | HMAC-SHA256, key derivation | BoringSSL-derived, Google-maintained |

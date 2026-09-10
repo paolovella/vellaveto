@@ -20,6 +20,68 @@ fn other_signing_key() -> String {
     hex::encode(signing_key.to_bytes())
 }
 
+/// SECURITY (DOC-CRED-2): Canaries published before domain separation must keep
+/// verifying. A canary is a published artifact people re-check over time; a
+/// change that silently invalidated old ones would look exactly like the
+/// compromise a canary exists to signal.
+#[test]
+fn test_canary_signed_before_domain_separation_still_verifies() {
+    let key = test_signing_key();
+    let mut canary = create_canary("no warrants received", 30, &key).unwrap();
+
+    let key_bytes = hex::decode(&key).unwrap();
+    let key_array: [u8; 32] = key_bytes.try_into().unwrap();
+    let signing_key = SigningKey::from_bytes(&key_array);
+
+    // Re-sign with the pre-domain-separation payload, as an existing published
+    // canary would have been signed.
+    let undomained = canonical_payload(
+        canary.version,
+        &canary.signed_date,
+        &canary.expires_date,
+        &canary.statement,
+        false,
+    )
+    .unwrap();
+    canary.signature = hex::encode(signing_key.sign(&undomained).to_bytes());
+
+    let verification = verify_canary(&canary).expect("verify should succeed");
+    assert!(
+        verification.signature_valid,
+        "canaries signed before domain separation must still verify"
+    );
+}
+
+/// A canary signed under the domain must not verify against the undomained
+/// payload, which is what makes the separation real rather than cosmetic.
+#[test]
+fn test_canary_domain_changes_the_signed_payload() {
+    let key = test_signing_key();
+    let canary = create_canary("no warrants received", 30, &key).unwrap();
+
+    let domained = canonical_payload(
+        canary.version,
+        &canary.signed_date,
+        &canary.expires_date,
+        &canary.statement,
+        true,
+    )
+    .unwrap();
+    let undomained = canonical_payload(
+        canary.version,
+        &canary.signed_date,
+        &canary.expires_date,
+        &canary.statement,
+        false,
+    )
+    .unwrap();
+
+    assert_ne!(
+        domained, undomained,
+        "the domain tag must change the signed digest"
+    );
+}
+
 #[test]
 fn test_create_verify_roundtrip() {
     let key = test_signing_key();
@@ -52,6 +114,7 @@ fn test_expired_canary_detected() {
         &canary.signed_date,
         &canary.expires_date,
         &canary.statement,
+        true,
     )
     .expect("canonical_payload should succeed");
     let sig = signing_key.sign(&payload);
@@ -134,6 +197,7 @@ fn test_r259_can1_verify_rejects_reversed_dates() {
         &canary.signed_date,
         &canary.expires_date,
         &canary.statement,
+        true,
     )
     .unwrap();
     let sig = signing_key.sign(&payload);

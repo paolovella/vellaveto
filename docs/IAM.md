@@ -36,6 +36,29 @@ Use the returned XML as the IdP’s SP metadata when configuring your IdP (Okta,
 
 > **Tip:** Always include the RelayState that your login flow supplied when posting assertions. Vellaveto redirects back to it after the session is created.
 
+### SAML flow support and replay defence
+
+**Only IdP-initiated SSO is supported.** There is no SP-initiated AuthnRequest
+handler, so no request ID is ever stored — a `SAMLResponse` carrying
+`InResponseTo` cannot be matched against a pending request and is rejected.
+Configure your IdP for IdP-initiated SSO to this ACS endpoint.
+
+Assertion replay is defended by an **assertion-ID deduplication cache** (1-hour
+TTL, 100,000-entry capacity): an assertion ID seen before is rejected. This is
+per-process, so it does not survive a restart and is not shared across replicas
+— behind a load balancer, terminate SAML at a single instance or accept that
+replay protection is per-instance. `<Conditions>` `NotBefore` / `NotOnOrAfter`
+are enforced, and an assertion with no `<Conditions>` element is rejected rather
+than accepted.
+
+### DPoP scope
+
+DPoP (RFC 9449) is enforced on the **HTTP proxy's OAuth path**, which implements
+the full check: `jti` replay cache keyed with `ath` when token binding is
+present, `iat` skew bounds, and `exp`/`nbf` validation. It is not a
+server-wide control — do not assume a request to another surface carries DPoP
+proof-of-possession.
+
 ## Session / RBAC insights
 
 - After successful login (OIDC/SAML), the `iam` service emits a session cookie named `iam.session.cookie_name` with `HttpOnly`, `Secure`, and `SameSite=Strict`.  

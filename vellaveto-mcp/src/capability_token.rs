@@ -464,11 +464,16 @@ pub fn verify_capability_token(
         &token.expires_at,
     )?;
 
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    let content_hash = hasher.finalize();
+    // SECURITY (DOC-CRED-2): Domain-separated digest first, then the
+    // pre-domain-separation form so tokens issued before the change keep
+    // verifying until they expire. Signing always uses the domain-separated form.
+    let content_hash = content_digest(&canonical, true);
+    let signature_ok = verifying_key.verify(&content_hash, &signature).is_ok()
+        || verifying_key
+            .verify(&content_digest(&canonical, false), &signature)
+            .is_ok();
 
-    if verifying_key.verify(&content_hash, &signature).is_err() {
+    if !signature_ok {
         return Ok(CapabilityVerification {
             valid: false,
             failure_reason: Some("signature verification failed".to_string()),
@@ -747,11 +752,26 @@ fn build_canonical_content(
     ))
 }
 
-fn sign_content(signing_key: &SigningKey, canonical: &str) -> Result<String, CapabilityError> {
-    let mut hasher = Sha256::new();
+/// Digest of a token's canonical content, bound to the capability-token domain.
+///
+/// SECURITY (DOC-CRED-2): Seeding the hash with a type-specific constant means
+/// a signature over a capability token cannot be presented as a signature over
+/// another artifact type signed by the same key. `domain_separated` is false
+/// only when verifying tokens issued before this change.
+fn content_digest(canonical: &str, domain_separated: bool) -> Vec<u8> {
+    let mut hasher = if domain_separated {
+        vellaveto_types::signing_domain::domain_separated_hasher(
+            vellaveto_types::signing_domain::DOMAIN_CAPABILITY_TOKEN,
+        )
+    } else {
+        Sha256::new()
+    };
     hasher.update(canonical.as_bytes());
-    let content_hash = hasher.finalize();
-    let signature = signing_key.sign(&content_hash);
+    hasher.finalize().to_vec()
+}
+
+fn sign_content(signing_key: &SigningKey, canonical: &str) -> Result<String, CapabilityError> {
+    let signature = signing_key.sign(&content_digest(canonical, true));
     Ok(hex::encode(signature.to_bytes()))
 }
 

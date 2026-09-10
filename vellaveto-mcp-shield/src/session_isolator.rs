@@ -11,7 +11,7 @@ use crate::error::ShieldError;
 use crate::sanitizer::QuerySanitizer;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
-use vellaveto_audit::PiiScanner;
+use vellaveto_audit::{CustomPiiPattern, PiiScanner};
 
 /// Maximum number of concurrent sessions.
 const MAX_SESSIONS: usize = 1_000;
@@ -35,6 +35,13 @@ pub struct SessionIsolator {
     sessions: Mutex<HashMap<String, SessionState>>,
     max_sessions: usize,
     max_history: usize,
+    /// Operator-supplied PII patterns, used to build each session's scanner.
+    ///
+    /// Stored as patterns rather than a shared `PiiScanner` because every
+    /// session needs its own scanner instance, and the compiled scanner is not
+    /// cloneable. Without this, per-session isolation would silently drop the
+    /// custom patterns the global sanitizer honours.
+    custom_patterns: Vec<CustomPiiPattern>,
 }
 
 impl SessionIsolator {
@@ -51,12 +58,24 @@ impl SessionIsolator {
             .collect())
     }
 
-    /// Create a new session isolator with default bounds.
+    /// Create a new session isolator with default bounds and the built-in
+    /// PII patterns only.
     pub fn new() -> Self {
         Self {
             sessions: Mutex::new(HashMap::new()),
             max_sessions: MAX_SESSIONS,
             max_history: MAX_HISTORY_PER_SESSION,
+            custom_patterns: Vec::new(),
+        }
+    }
+
+    /// Create a session isolator that also applies operator-supplied PII
+    /// patterns, matching what a globally-configured [`QuerySanitizer`] scans
+    /// for. Each session gets its own scanner built from these patterns.
+    pub fn with_custom_patterns(patterns: Vec<CustomPiiPattern>) -> Self {
+        Self {
+            custom_patterns: patterns,
+            ..Self::new()
         }
     }
 
@@ -70,6 +89,7 @@ impl SessionIsolator {
             sessions: Mutex::new(HashMap::new()),
             max_sessions: max_sessions.min(MAX_SESSIONS),
             max_history: max_history.min(MAX_HISTORY_PER_SESSION),
+            custom_patterns: Vec::new(),
         }
     }
 
@@ -120,7 +140,9 @@ impl SessionIsolator {
         sessions.insert(
             session_id.to_string(),
             SessionState {
-                sanitizer: QuerySanitizer::new(PiiScanner::default()),
+                sanitizer: QuerySanitizer::new(PiiScanner::new_for_sanitizer(
+                    &self.custom_patterns,
+                )),
                 history: VecDeque::new(),
             },
         );
@@ -203,6 +225,113 @@ impl SessionIsolator {
         }
 
         state.sanitizer.desanitize(input)
+    }
+
+    /// Sanitize every string in a JSON message within a session's own mapping
+    /// table.
+    ///
+    /// The JSON equivalent of [`sanitize_in_session`], for the proxy bridge,
+    /// which works in whole JSON-RPC messages rather than bare strings. Reuses
+    /// [`QuerySanitizer::sanitize_json`] for the traversal and records the
+    /// serialized result in session history, so the binding check in
+    /// [`desanitize_json_in_session`] has something to bind against.
+    ///
+    /// [`sanitize_in_session`]: Self::sanitize_in_session
+    /// [`desanitize_json_in_session`]: Self::desanitize_json_in_session
+    pub fn sanitize_json_in_session(
+        &self,
+        session_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, ShieldError> {
+        self.ensure_session(session_id)?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|e| ShieldError::SessionIsolation(format!("lock poisoned: {e}")))?;
+
+        let state = sessions.get_mut(session_id).ok_or_else(|| {
+            ShieldError::SessionIsolation("session not found after ensure".to_string())
+        })?;
+
+        let sanitized = state.sanitizer.sanitize_json(value)?;
+
+        // Record the serialized form so placeholder binding can check that a
+        // response only restores placeholders this session actually emitted.
+        let record = serde_json::to_string(&sanitized)
+            .map_err(|e| ShieldError::Sanitization(format!("serialize sanitized json: {e}")))?;
+        if state.history.len() >= self.max_history {
+            state.history.pop_front();
+        }
+        state.history.push_back(record);
+
+        Ok(sanitized)
+    }
+
+    /// Restore PII in a JSON message from a session's own mapping table.
+    ///
+    /// The JSON equivalent of [`desanitize_in_session`], and it keeps that
+    /// method's fail-closed property: placeholders this session owns must
+    /// appear in its most recent outbound message, so a server cannot probe the
+    /// mapping table by replaying guessed placeholder IDs. Placeholders
+    /// belonging to other sessions are unknown to this sanitizer and pass
+    /// through unchanged — which is the isolation guarantee.
+    ///
+    /// [`desanitize_in_session`]: Self::desanitize_in_session
+    pub fn desanitize_json_in_session(
+        &self,
+        session_id: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, ShieldError> {
+        Self::validate_session_id(session_id)?;
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|e| ShieldError::SessionIsolation(format!("lock poisoned: {e}")))?;
+
+        let state = sessions.get(session_id).ok_or_else(|| {
+            ShieldError::SessionIsolation(format!("unknown session: {session_id}"))
+        })?;
+
+        let serialized = serde_json::to_string(value)
+            .map_err(|e| ShieldError::Desanitization(format!("serialize json: {e}")))?;
+        let placeholders = Self::extract_placeholders(&serialized)?;
+        let owned: Vec<&String> = placeholders
+            .iter()
+            .filter(|p| state.sanitizer.has_placeholder(p))
+            .collect();
+        if !owned.is_empty() {
+            if state.history.is_empty() {
+                return Err(ShieldError::Desanitization(
+                    "no outbound sanitized request available for placeholder restoration"
+                        .to_string(),
+                ));
+            }
+            // Every owned placeholder must have been emitted by *some* outbound
+            // message in this session's bounded history.
+            //
+            // Deliberately not "the most recent message only", which is what the
+            // string-based `desanitize_in_session` checks. JSON-RPC allows
+            // several requests in flight at once, so a response to request A can
+            // legitimately arrive after request B has gone out; binding to the
+            // latest message alone would fail those responses closed and break
+            // pipelining. Searching the whole history still blocks the attack
+            // that check exists for — a server echoing a guessed placeholder ID
+            // to probe the mapping table — because a placeholder this session
+            // never emitted appears nowhere in it.
+            if owned.iter().any(|placeholder| {
+                !state
+                    .history
+                    .iter()
+                    .any(|outbound| outbound.contains(placeholder.as_str()))
+            }) {
+                return Err(ShieldError::Desanitization(
+                    "response contains placeholders this session never emitted (fail-closed)"
+                        .to_string(),
+                ));
+            }
+        }
+
+        state.sanitizer.desanitize_json(value)
     }
 
     /// End a session, wiping all state.

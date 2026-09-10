@@ -20,6 +20,15 @@ max_pii_mappings = 50000
 max_sessions = 1000
 max_history_per_session = 10000
 
+# Withhold correlation and tracing headers from upstream requests. Applies to
+# the HTTP proxy; no effect on a stdio proxy. Off by default because it also
+# disables distributed tracing through the proxy.
+strip_privacy_headers = false
+
+# Traffic padding is NOT implemented — the padding format needs peer
+# negotiation that does not exist yet. See vellaveto-http-proxy-shield/README.md.
+traffic_padding = false
+
 # ── Session Unlinkability (Sprint 2) ─────────────────────────────
 # Each session consumes a fresh blind credential from the local vault.
 # Provider cannot correlate sessions to the same user.

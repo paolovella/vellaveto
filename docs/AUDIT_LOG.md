@@ -23,6 +23,56 @@ Finding IDs follow the pattern `FIND-R{round}-{number}` (e.g., `FIND-R116-001`).
 
 ---
 
+## Unwired-Feature Sweep (Sep 2026)
+
+A follow-up scan asked a sharper question than the documentation review below:
+**which advertised features have no production caller at all?** Seven findings.
+Unlike the round below, most were closed by wiring the feature rather than by
+softening the claim.
+
+| ID | Sev | Finding | Outcome |
+|----|-----|---------|---------|
+| **F1** | P1 | **Shield's encrypted local audit never wrote anything.** `vellaveto-shield/src/main.rs` built a `LocalAuditManager`, configured Merkle and ZK on it, bound it to `_audit_manager` (the "intentionally unused" convention) and never passed it to the bridge — while logging `"Encrypted audit store: ENABLED"` and `"ZK commitments: ENABLED"`. The real interaction history went to plaintext `shield-audit.log`. | **Fixed** — `with_shield_audit()` on the bridge, called at the outbound and inbound hook points beside the context isolator. Honours `audit.strict_mode`. |
+| **F2** | P2 | **`vellaveto-http-proxy-shield` was an unconsumed workspace crate.** Traffic padding and privacy header stripping were both advertised and inert; the stdio shield only printed `"Traffic padding: ENABLED (HTTP transport only)"`, impossible for a stdio proxy. | **Split.** Header stripping wired into the HTTP proxy behind `shield.strip_privacy_headers`. Padding deliberately **not** wired — see F2a. |
+| **F2a** | P2 | **Traffic padding cannot be enabled without breaking clients.** `pad_content` emits `[4-byte LE length][content][zero padding]`; a padded body is not valid JSON, so any standard MCP client fails to parse it. | **Fixed** — negotiated per request: requires `shield.traffic_padding` *and* the client sending `X-Vellaveto-Padding: v1`. Everyone else gets the unpadded body unchanged. No shipped client negotiates it yet, so the round-trip test is the only in-tree consumer; `vellaveto-http-proxy-shield/README.md` says so. |
+| **F3** | P2 | **`DiscoveryEngine` was unfed on every transport except stdio.** Constructed in `vellaveto-http-proxy/src/main.rs`, stored in `ProxyState`, never read. Topology discovery silently indexed nothing over HTTP, SSE, WebSocket, or gRPC. | **Fixed** — `ingest_tools_for_discovery()` called at all four sites that already register output schemas from `tools/list`. |
+| **F4** | P3 | **`SessionIsolator` was dead code** while the bridge sanitized through one process-global `QuerySanitizer`. Harmless in the stdio shield (one session per process) but README invariant #4 calls no-cross-session-leakage a product invariant, and a guarantee that holds only by deployment accident is not one. | **Fixed** — wired behind `shield.session_isolation`. Required adding custom-pattern support (it hardcoded `PiiScanner::default()`, which would have silently dropped operator patterns) and a JSON API. |
+| **F5** | P3 | **`ContextIsolator`'s continuity claim was unimplementable safely.** Its doc said local history was "injected into the new session's prompt"; `get_recent_context()` had no caller. The only prompt-carrying message crossing a stdio proxy is a server-initiated `sampling/createMessage`, and the agent returns that completion **to the requesting server** — so injecting history there would let a malicious MCP server harvest it. | **Claim withdrawn, deliberately.** Wiring it as documented would have added an exfiltration channel. Per-session isolation (the real property) is kept and tested. |
+| **F6** | P4 | **`CLAUDE.md` was a major version stale** — 6.1.1 / 2026-03-30 against a 7.0.0 release, with test counts (11,571 vs 13,235), preset counts (12 vs 18) and formal counts all drifted. | **Fixed** — refreshed, and hand-maintained counts replaced with a pointer to the generated evidence block so they cannot drift again. |
+| **F7** | P4 | **Four dead `_requested_by` lookups** in `grpc/service.rs`, each carrying a `SECURITY` comment warning that without them self-approval prevention is bypassed. `create_pending_approval_with_context` derives the requester itself (`helpers.rs`), so they were redundant — but they read like an active control. | **Fixed** — removed, with a note pointing at where the derivation actually happens. |
+
+Verified healthy during the same sweep and deliberately left alone: zero
+`unwrap()`/`expect()` in library code; formal counts exact (Coq 45, Lean 32,
+Alloy 10, TLA+ 14 specs, Kani 129 ≥ 124 claimed) with no `Admitted`, `sorry`, or
+`verifier::external_body`; the 87 `assume(` calls are all `kani::assume` input
+constraints governed by `formal/tools/check-formal-trusted-assumptions.sh`; and
+fail-closed defaults correct at every site checked. The topology crawler and
+recrawl scheduler **are** wired (`vellaveto-server/src/main.rs`), and
+self-approval prevention **is** intact on gRPC — both looked broken on a first
+pass and are not.
+
+---
+
+## Documentation Credibility Review (Mar 2026) — PARTIALLY CLOSED
+
+A review of published claims against the source found several places where the
+documentation asserted more than the code delivers. The claims were corrected in
+the docs; the underlying code gaps are tracked here and are **not yet fixed**.
+
+| ID | Severity | Finding | Status |
+|----|----------|---------|--------|
+| **DOC-CRED-1** | P3 | `PiiScanner::default_patterns()` has no file-path or personal-name pattern, so the Consumer Shield cannot sanitize either. Adding cross-platform path detection (POSIX `/home`/`/Users`, Windows `C:\Users\`, UNC `\\host\share`) needs ReDoS review under `validate_regex_safety()` and false-positive testing — a bare path regex matches ordinary prose, and these patterns run on the request hot path against a <5ms P99 budget. Personal names are out of reach for regex and should not be claimed until a real approach exists. | Open — docs corrected to stop claiming the coverage |
+| **DOC-CRED-2** | P2 | No domain separation on any Ed25519 signature. Every payload is a bare 32-byte SHA-256 digest with no context prefix, so checkpoints, rotation manifests, evidence packs, and warrant canaries are indistinguishable to a verifier; separation rests on field layouts happening not to collide. An operator who reuses one seed across `VELLAVETO_SIGNING_KEY`, `create_canary`, `issue_capability_token`, `EtdiSigner`, and `sign_evidence_pack` makes digests cross-verifiable between artifact types. The `CHECKPOINT_CONTEXT`/`MANIFEST_CONTEXT` separators in `vellaveto-audit/src/pqc.rs` cover the ML-DSA half of the hybrid only. Fix: per-artifact context prefix in each Ed25519 signing payload (a signature-format change — needs a version bump and a verification-compatibility path). | **Fixed (Sep 2026)** — `vellaveto_types::signing_domain` seeds each digest with a length-prefixed per-type constant; migrated checkpoints, evidence packs, rotation manifests, capability tokens, accountability attestations, and the canary (which inlines its constant, being standalone Apache-2.0). Each type keeps its pre-separation content as a verification-only fallback, so no existing signed artifact stops verifying. Scope correction from the original entry: the verify paths all **recompute** the digest from the object being checked rather than accepting a caller-supplied one, so cross-type transfer would have needed a SHA-256 collision. This was hardening of an unstated assumption, not a live exploit. |
+| **DOC-CRED-3** | P3 | Audit chain timestamp monotonicity is enforced only in `verify_chain()` (`vellaveto-audit/src/verification.rs`), as a lexicographic comparison of timestamp *strings*. Nothing is checked at append time — `log_entry_inner` stamps `Utc::now()` and writes unconditionally — so a backwards host clock jump produces a log that fails its own verification. `sequence == 0` is accepted unconditionally as "legacy", bypassing the sequence check. Checkpoint verification does not check timestamps at all. | Open — guarantee restated accurately |
+| **DOC-CRED-4** | P2 | Warrant canary is unusable as published. `create_canary()` has no caller outside its own tests — there is no CLI, route, or publication workflow — and `verify_canary()` checks the signature against the verifying key carried inside the canary, so `signature_valid: true` proves internal consistency, not authenticity. Fix: an issuance workflow with a stated cadence, plus `verify_canary_with_key(canary, expected_key)` that fails closed on key mismatch. | Open — "prove" claims withdrawn |
+| **DOC-CRED-5** | P3 | `SignedAgentMessage::verify` / `AgentKeyRegistry::verify_message` have no production callers; inter-agent Ed25519 signing and nonce replay protection are available library primitives, not enforced runtime controls, and were listed as ASI07 mitigations. Fix: wire them into the relay path. | Open — threat model corrected |
+| **DOC-CRED-6** | P2 | `SecureTask` replay protection evicts seen nonces **FIFO at a count cap** (`vellaveto-types/src/task.rs`). An attacker who emits `max_nonces` fresh nonces flushes the cache and can then replay an evicted one. Fix: evict by time window rather than by count, so eviction is tied to the freshness bound instead of to volume. | Open — limitation documented |
+
+All replay caches in the workspace are per-process (`RwLock<HashMap>` /
+`DashMap`): none survive a restart or coordinate across replicas.
+
+---
+
 ## ACIS Decision Envelopes (E1/E2, Mar 2026)
 
 Every security decision now carries a structured `AcisDecisionEnvelope` in the audit trail, providing:

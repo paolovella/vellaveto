@@ -162,11 +162,18 @@ network observers — TLS enforcement closes this gap.
 
 ### Cryptographic Standards
 
-- **Audit signing**: Ed25519 (ed25519-dalek)
+- **Audit signing**: Ed25519 (ed25519-dalek) — rationale, and the trade-offs it
+  carries (not FIPS 140-3 approved, not post-quantum, no domain separation
+  between artifact types), in [Security Model](SECURITY_MODEL.md#why-ed25519)
 - **Credential encryption**: XChaCha20-Poly1305 with Argon2id key derivation
 - **Password hashing**: Argon2id
-- **Token binding**: DPoP (RFC 9449)
-- **Post-quantum**: Hybrid Ed25519 + ML-DSA-65 (FIPS 204), feature-gated
+- **Token binding**: DPoP (RFC 9449) — the complete RFC 9449 implementation is
+  in the HTTP proxy's OAuth path; see [IAM](IAM.md) for which surfaces enforce it
+- **Post-quantum**: Hybrid Ed25519 + ML-DSA-65 (FIPS 204), feature-gated, and
+  covering audit checkpoints and rotation manifests only — not evidence packs,
+  canaries, agent cards, or capability tokens
+- **Timestamps**: signing host wall clock. No RFC 3161 timestamp authority,
+  Roughtime, or transparency-log anchor — signatures attest authorship, not time
 
 ### Container Deployment
 
@@ -192,7 +199,7 @@ See `docs/SECURITY.md` for full container and systemd hardening guidance.
 12-round adversarial audit campaign with 35 security findings fixed and 11 architectural hardening changes. Key additions:
 
 ### Cryptographic Integrity
-- **Ed25519 evidence pack signing** — compliance artifacts (EvidencePack) are now signed with Ed25519, providing non-repudiation and tamper detection. `signing_content()` covers all fields including sections, recommendations, and period bounds.
+- **Ed25519 evidence pack signing** — compliance artifacts (EvidencePack) are now signed with Ed25519, providing tamper detection and authorship attribution under a pinned key. `signing_content()` covers all fields including sections, recommendations, and period bounds. Note that the `generated_at` and period bounds are read from the signing host's clock and are not externally attested, so the signature does not establish *when* a pack was produced — see [Signing and timestamps](SECURITY_MODEL.md#where-signing-time-comes-from).
 - **SHA-256 plugin content-hash verification** — Wasm plugin binaries are verified against a declared hash before instantiation (TOCTOU defense).
 - **HMAC key minimum 32 bytes** — attestation keys shorter than 32 bytes are rejected at startup (fail-closed).
 

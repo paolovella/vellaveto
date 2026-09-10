@@ -25,5 +25,5 @@
     "failed": 0,
     "skipped": 0
   },
-  "note": "Reference results for Vellaveto v6.0.0 (248 audit rounds). Run 'cargo run -p mcpsec -- --target http://localhost:3000' against a live instance to verify."
+  "note": "Self-run: MCPSEC and Vellaveto share authorship, so this is a regression result, not independent validation. Produced against Vellaveto v6.0.0 with MCPSEC 1.2.0; scores are not comparable across MCPSEC major versions or Vellaveto releases. Reproduce with 'cargo run -p mcpsec -- --target http://localhost:3000' against a live v6.0.0 instance."
 }

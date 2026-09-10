@@ -21,7 +21,13 @@
 //!
 //! # Signature Format
 //!
-//! Agent Cards are signed using JWS Compact Serialization (RFC 7515).
+//! The signature is a **detached Ed25519 signature over the raw Agent Card JSON
+//! bytes** — not JWS Compact Serialization (RFC 7515), despite the JWS-style
+//! claim names. The claims (`iss`, `sub`, `iat`, `exp`, `kid`, `card_hash`) are
+//! not part of the signed preimage; they are bound to the card only indirectly,
+//! by checking `card_hash == SHA-256(card_json)`. A verifier written against
+//! RFC 7515 will not interoperate with this format.
+//!
 //! The signature is carried in an HTTP header (`X-Agent-Card-Signature`)
 //! or in the card JSON itself under `_signature`.
 //!
@@ -30,6 +36,15 @@
 //! - Fail-closed: missing or invalid signature -> reject.
 //! - Bounded: maximum signature size, key count, and cache entries.
 //! - No secrets in Debug: signing keys are redacted.
+//!
+//! # No replay protection
+//!
+//! Agent Cards carry no nonce, so a validly signed card can be replayed for the
+//! whole of its `exp` lifetime — the only bound on reuse is the card's own
+//! expiry, together with the `iat`/`exp` skew and lifetime limits enforced
+//! here. The cache in this module is a *positive-result* cache: it remembers
+//! cards that verified, which speeds up repeat presentation rather than
+//! preventing it. Keep card lifetimes short.
 //! - All counters use `saturating_add`.
 
 use ed25519_dalek::{Signature, VerifyingKey, PUBLIC_KEY_LENGTH, SIGNATURE_LENGTH};

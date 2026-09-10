@@ -9,7 +9,7 @@ For the Trusted Computing Base (what is proven, what is trusted, what is not
 covered), see [TRUSTED_COMPUTING_BASE.md](TRUSTED_COMPUTING_BASE.md).
 
 For the verification roadmap (Verus core, cross-call DLP, Kani expansion),
-see [FORMAL_VERIFICATION_PLAN.md](FORMAL_VERIFICATION_PLAN.md).
+see [formal/README.md](../formal/README.md).
 
 ---
 
@@ -158,7 +158,7 @@ Verification tool: Verus 0.2026.03.01 + Z3 4.12.5. Result: **14 verified, 0 erro
 
 ### Planned Expansions
 
-See [FORMAL_VERIFICATION_PLAN.md](FORMAL_VERIFICATION_PLAN.md) for the roadmap:
+See [formal/README.md](../formal/README.md) for the roadmap:
 
 | Phase | Tool | New Properties | Target |
 |-------|------|---------------|--------|

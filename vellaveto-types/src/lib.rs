@@ -43,6 +43,7 @@ pub mod protocol_version;
 pub mod provenance;
 pub mod security_context_token;
 pub mod shield;
+pub mod signing_domain;
 pub mod task;
 pub mod threat;
 pub mod time_util;

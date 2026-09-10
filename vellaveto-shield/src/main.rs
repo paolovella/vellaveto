@@ -110,8 +110,10 @@ async fn main() -> Result<()> {
         .context("Failed to initialize audit chain — refusing to start")?;
     tracing::info!("Audit log: {}", audit_path.display());
 
-    // Set up encrypted audit store (only in local audit mode)
-    let mut _audit_manager = None;
+    // Set up encrypted audit store (only in local audit mode).
+    // Wired into the bridge below — without that, the store is created on disk
+    // and never written to.
+    let mut audit_manager = None;
     if policy_config.shield.enabled
         && !passphrase.is_empty()
         && policy_config.shield.audit_mode == "local"
@@ -132,14 +134,15 @@ async fn main() -> Result<()> {
         } else {
             manager
         };
-        _audit_manager = Some(manager);
+        audit_manager = Some(std::sync::Arc::new(tokio::sync::Mutex::new(manager)));
         tracing::info!("Encrypted audit store: ENABLED (local mode)");
     } else if policy_config.shield.enabled && policy_config.shield.audit_mode == "remote" {
         tracing::info!("Audit mode: remote — encrypted local store skipped");
     }
 
     // Set up shield sanitizer
-    let shield_sanitizer = if policy_config.shield.enabled && policy_config.shield.sanitize_queries
+    let (shield_sanitizer, shield_session_isolator) = if policy_config.shield.enabled
+        && policy_config.shield.sanitize_queries
     {
         let custom_patterns: Vec<vellaveto_audit::CustomPiiPattern> = policy_config
             .shield
@@ -150,14 +153,30 @@ async fn main() -> Result<()> {
                 pattern: p.pattern.clone(),
             })
             .collect();
-        // Sanitizer profile, not the audit profile: this text is going to a
-        // provider, so file paths must be replaced. Audit keeps them.
-        let scanner = vellaveto_audit::PiiScanner::new_for_sanitizer(&custom_patterns);
-        let sanitizer = Arc::new(vellaveto_mcp_shield::QuerySanitizer::new(scanner));
-        tracing::info!("Shield sanitizer: ENABLED");
-        Some(sanitizer)
+        // With session isolation on, PII mappings are scoped per session
+        // instead of being shared process-wide. The two are alternatives: a
+        // second mapping table would make desanitization consult the wrong one,
+        // so exactly one of these is populated.
+        if policy_config.shield.session_isolation {
+            tracing::info!("Shield sanitizer: ENABLED (per-session isolation)");
+            (
+                None,
+                Some(Arc::new(
+                    vellaveto_mcp_shield::SessionIsolator::with_custom_patterns(custom_patterns),
+                )),
+            )
+        } else {
+            // Sanitizer profile, not the audit profile: this text is going to a
+            // provider, so file paths must be replaced. Audit keeps them.
+            let scanner = vellaveto_audit::PiiScanner::new_for_sanitizer(&custom_patterns);
+            tracing::info!("Shield sanitizer: ENABLED (process-global mapping table)");
+            (
+                Some(Arc::new(vellaveto_mcp_shield::QuerySanitizer::new(scanner))),
+                None,
+            )
+        }
     } else {
-        None
+        (None, None)
     };
 
     // Optional: Verify warrant canary
@@ -300,9 +319,14 @@ async fn main() -> Result<()> {
         .with_sampling_config(policy_config.sampling.clone())
         .with_elicitation_config(policy_config.elicitation.clone());
 
-    // Wire shield sanitizer and desanitize flag
+    // Wire shield sanitizer and desanitize flag. Exactly one of these is set:
+    // the session isolator keeps a mapping table per session, the global
+    // sanitizer keeps one for the process.
     if let Some(sanitizer) = shield_sanitizer {
         bridge = bridge.with_shield_sanitizer(sanitizer);
+    }
+    if let Some(isolator) = shield_session_isolator {
+        bridge = bridge.with_session_isolator(isolator);
     }
     bridge = bridge.with_shield_desanitize_responses(policy_config.shield.desanitize_responses);
 
@@ -406,8 +430,16 @@ async fn main() -> Result<()> {
         bridge = bridge.with_context_isolator(isolator);
     }
 
-    if policy_config.shield.traffic_padding {
-        tracing::info!("Traffic padding: ENABLED (HTTP transport only)");
+    // Wire the encrypted audit store into the bridge so intercepted requests
+    // and responses are actually recorded. Without this the store exists on
+    // disk and stays empty.
+    if let Some(manager) = audit_manager {
+        bridge = bridge
+            .with_shield_audit(manager)
+            .with_shield_audit_strict(policy_config.audit.strict_mode);
+        if policy_config.audit.strict_mode {
+            tracing::info!("Encrypted audit: STRICT (write failure blocks the request)");
+        }
     }
 
     tracing::info!(

@@ -83,6 +83,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cases, so the benchmark's own model of a correct gateway was
   indistinguishable from a brick wall. `ATTACKS.md` now documents A17, which it
   had omitted.
+### Added
+
+- **Traffic padding, negotiated per client** (`shield.traffic_padding`).
+  Responses are padded to fixed size buckets only for clients that opt in with
+  `X-Vellaveto-Padding: v1`; padded responses carry
+  `X-Vellaveto-Padding-Applied: v1`. Any client that does not ask — which is
+  every standard MCP client — gets the unpadded body unchanged, because the
+  framing is not valid JSON. No shipped client negotiates it yet.
+- **`shield.strip_privacy_headers`** (default `false`): withholds `traceparent`,
+  `tracestate`, and the `x-*-trace-id` family from upstream requests, which an
+  upstream operator would otherwise use to correlate a user's requests across
+  sessions. Applies to the HTTP proxy. Off by default because it also disables
+  distributed tracing through the proxy.
+
+### Changed
+
+- **`shield.session_isolation` now also selects per-session PII isolation.**
+  Previously it enabled only context-window isolation while PII sanitization used
+  one process-global mapping table. With it on, each session gets its own mapping
+  table and a placeholder minted in one session is meaningless in another. The
+  process-global sanitizer remains the path when the flag is off.
+  `SessionIsolator` gained custom-pattern support so operator-configured PII
+  patterns survive the switch, and a JSON API for the bridge.
+- Placeholder restoration binds against the session's whole bounded history
+  rather than only its most recent outbound message, so responses to pipelined
+  JSON-RPC requests no longer fail closed. A placeholder the session never
+  emitted is still refused.
+
+### Fixed
+
+- **Consumer Shield: the encrypted local audit now records.** `LocalAuditManager`
+  was constructed, configured with Merkle and ZK, and never wired into the proxy
+  bridge, so the encrypted store was created on disk and stayed empty while the
+  binary logged `Encrypted audit store: ENABLED`. Every intercepted request and
+  response is now written to it, before sanitization so the local history shows
+  what was stripped. Honours `audit.strict_mode`: a write failure blocks the
+  request when strict, and on the response path returns an explicit error rather
+  than dropping the message.
+- **Topology discovery now runs on every transport.** The HTTP proxy constructed
+  a `DiscoveryEngine` and never fed it, so discovery indexed nothing outside the
+  stdio relay. `tools/list` responses are now ingested on the HTTP, SSE,
+  WebSocket, and gRPC paths as well.
+- Removed four redundant `_requested_by` session lookups in the gRPC service that
+  carried `SECURITY` comments but were dead — `create_pending_approval_with_context`
+  derives the requester itself. Self-approval prevention was never affected.
+
+### Security
+
+- **Ed25519 signatures are now domain-separated** (DOC-CRED-2). Every signed
+  artifact hashed its fields into SHA-256 and signed the bare 32-byte digest, so
+  nothing in the signed bytes identified which artifact type they came from —
+  the safety of one key signing many types rested on an unstated assumption that
+  no two ever collide. `vellaveto_types::signing_domain` now seeds each digest
+  with a length-prefixed per-type constant. Migrated: audit checkpoints, evidence
+  packs, rotation manifests, capability tokens, accountability attestations, and
+  the warrant canary. Each type keeps its pre-separation content as a
+  verification-only fallback, so **no existing signed artifact stops verifying**.
+  This is defence in depth rather than a patched exploit: every verifier
+  recomputes the digest from the object being checked, so cross-type transfer
+  would have required a SHA-256 collision.
+
+### Documentation
+
+- `ContextIsolator` no longer claims local history is injected into new sessions'
+  prompts. It never was, and it should not be: the only prompt-carrying message
+  crossing a stdio proxy is a server-initiated `sampling/createMessage`, whose
+  completion returns to that server — injecting history there would let a
+  malicious MCP server harvest it.
+- `vellaveto-http-proxy-shield` documents that traffic padding is not integrated
+  and why: `pad_content` emits a length-prefixed framing that is not valid JSON,
+  so it can only be applied where the peer has negotiated support.
+- `CLAUDE.md` refreshed from 6.1.1 to 7.0.0; hand-maintained test and proof
+  counts replaced with a pointer to the generated evidence block.
 ### Security
 
 - **Task resume replay protection no longer forgets nonces under load**

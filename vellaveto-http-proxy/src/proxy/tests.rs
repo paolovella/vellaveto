@@ -5003,6 +5003,8 @@ fn make_test_proxy_state(canonicalize: bool) -> ProxyState {
         audit: Arc::new(AuditLogger::new(PathBuf::from("/tmp/test-audit.log"))),
         sessions: Arc::new(SessionStore::new(std::time::Duration::from_secs(300), 100)),
         upstream_url: "http://localhost:9999".to_string(),
+        traffic_padding: false,
+        strip_privacy_headers: false,
         http_client: reqwest::Client::new(),
         oauth: None,
         injection_scanner: None,
@@ -5067,6 +5069,215 @@ fn make_test_proxy_state(canonicalize: bool) -> ProxyState {
         #[cfg(feature = "projector")]
         projector_registry: None,
         attestation_hmac_key: None,
+    }
+}
+
+/// Transport parity: the HTTP-family transports must feed the discovery engine
+/// the same `tools/list` responses the stdio relay does. Before this wiring the
+/// engine was constructed and never fed, so discovery silently indexed nothing
+/// outside stdio.
+#[cfg(feature = "discovery")]
+#[test]
+fn test_ingest_tools_for_discovery_indexes_tools_list() {
+    use vellaveto_mcp::discovery::DiscoveryEngine;
+
+    let mut state = make_test_proxy_state(false);
+    let engine = std::sync::Arc::new(DiscoveryEngine::new(vellaveto_config::DiscoveryConfig {
+        enabled: true,
+        ..Default::default()
+    }));
+    state.discovery_engine = Some(std::sync::Arc::clone(&engine));
+
+    assert_eq!(
+        engine.index_stats().unwrap().total_tools,
+        0,
+        "engine starts empty"
+    );
+
+    let response = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "tools": [
+                {
+                    "name": "read_file",
+                    "description": "Read a file from disk",
+                    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}
+                },
+                {
+                    "name": "write_file",
+                    "description": "Write a file to disk",
+                    "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}
+                }
+            ]
+        }
+    });
+
+    super::helpers::ingest_tools_for_discovery(&state, &response);
+
+    assert_eq!(
+        engine.index_stats().unwrap().total_tools,
+        2,
+        "tools/list response must reach the discovery index"
+    );
+}
+
+/// A response with no `result.tools` must not disturb the index, since the
+/// helper is called on every response the transports see.
+#[cfg(feature = "discovery")]
+#[test]
+fn test_ingest_tools_for_discovery_ignores_non_tools_responses() {
+    use vellaveto_mcp::discovery::DiscoveryEngine;
+
+    let mut state = make_test_proxy_state(false);
+    let engine = std::sync::Arc::new(DiscoveryEngine::new(vellaveto_config::DiscoveryConfig {
+        enabled: true,
+        ..Default::default()
+    }));
+    state.discovery_engine = Some(std::sync::Arc::clone(&engine));
+
+    for payload in [
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "result": {"content": []}}),
+        serde_json::json!({"jsonrpc": "2.0", "id": 1, "error": {"code": -32000}}),
+        serde_json::json!({"jsonrpc": "2.0", "method": "notifications/progress"}),
+    ] {
+        super::helpers::ingest_tools_for_discovery(&state, &payload);
+    }
+
+    assert_eq!(engine.index_stats().unwrap().total_tools, 0);
+}
+
+/// With no engine configured the helper must be inert, not panic — most
+/// deployments run without discovery enabled.
+#[cfg(feature = "discovery")]
+#[test]
+fn test_ingest_tools_for_discovery_without_engine_is_inert() {
+    let state = make_test_proxy_state(false);
+    assert!(state.discovery_engine.is_none());
+    super::helpers::ingest_tools_for_discovery(
+        &state,
+        &serde_json::json!({"result": {"tools": [{"name": "x", "description": "y"}]}}),
+    );
+}
+
+/// Padding requires BOTH the operator config and the client's opt-in. Either
+/// missing means the body goes out untouched — which is what every standard MCP
+/// client gets, since a padded body is not valid JSON.
+#[test]
+fn test_response_padding_requires_config_and_client_optin() {
+    let mut state = make_test_proxy_state(false);
+    let body = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".to_vec();
+
+    for (config_on, client_optin) in [(false, false), (false, true), (true, false)] {
+        state.traffic_padding = config_on;
+        let (out, version) =
+            super::upstream::apply_response_padding(&state, client_optin, body.clone());
+        assert_eq!(
+            out, body,
+            "body must be untouched (config={config_on}, client={client_optin})"
+        );
+        assert!(version.is_none(), "no padding header without both sides");
+    }
+}
+
+/// With both sides agreeing, the body is padded to a bucket and the framing is
+/// advertised — and a client that strips it gets the original bytes back. This
+/// round trip is the only in-tree consumer of padding, by design: no standard
+/// MCP client will ever negotiate it.
+#[test]
+fn test_response_padding_round_trips_for_opted_in_client() {
+    use vellaveto_http_proxy_shield::traffic_padding::{unpad_content, SIZE_BUCKETS};
+
+    let mut state = make_test_proxy_state(false);
+    state.traffic_padding = true;
+
+    let body = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}".to_vec();
+    let (padded, version) = super::upstream::apply_response_padding(&state, true, body.clone());
+
+    assert_eq!(version, Some("v1"), "framing version must be advertised");
+    assert_ne!(padded, body, "body must actually be padded");
+    assert!(
+        SIZE_BUCKETS.contains(&padded.len()),
+        "padded length {} must be one of the documented buckets",
+        padded.len()
+    );
+    assert_eq!(
+        unpad_content(&padded).expect("padded body must unpad"),
+        body,
+        "a client that strips the framing must recover the original bytes"
+    );
+}
+
+/// Bodies too large to bucket are sent unpadded rather than framed. Framing them
+/// would break the client for no privacy gain, since the size is already outside
+/// every bucket.
+#[test]
+fn test_response_padding_skips_oversized_bodies() {
+    use vellaveto_http_proxy_shield::traffic_padding::SIZE_BUCKETS;
+
+    let mut state = make_test_proxy_state(false);
+    state.traffic_padding = true;
+
+    let largest = SIZE_BUCKETS[SIZE_BUCKETS.len() - 1];
+    let body = vec![b'x'; largest + 1];
+    let (out, version) = super::upstream::apply_response_padding(&state, true, body.clone());
+
+    assert_eq!(out, body, "oversized body must pass through unpadded");
+    assert!(
+        version.is_none(),
+        "no framing header when nothing was framed"
+    );
+}
+
+/// Only framing versions we actually speak count as opt-in. Guessing at an
+/// unknown version would corrupt that client's response just as surely as
+/// padding an unaware one.
+#[test]
+fn test_padding_negotiation_rejects_unknown_versions() {
+    use vellaveto_http_proxy_shield::traffic_padding::client_accepts_padding;
+
+    assert!(client_accepts_padding(Some("v1")));
+    assert!(client_accepts_padding(Some("V1")), "case-insensitive");
+    assert!(client_accepts_padding(Some("  v1  ")), "surrounding space");
+
+    assert!(!client_accepts_padding(None), "absent header is not opt-in");
+    assert!(!client_accepts_padding(Some("v2")), "unknown version");
+    assert!(!client_accepts_padding(Some("")), "empty is not opt-in");
+    assert!(!client_accepts_padding(Some("v1, v2")), "list is not v1");
+}
+
+/// The privacy header list is authoritative: every name in it is stripped
+/// when the flag is on, and nothing is stripped when it is off.
+#[test]
+fn test_strip_for_privacy_honours_flag_and_list() {
+    let mut state = make_test_proxy_state(false);
+
+    state.strip_privacy_headers = false;
+    for header in vellaveto_http_proxy_shield::PRIVACY_STRIP_HEADERS {
+        assert!(
+            !super::upstream::strip_for_privacy(&state, header),
+            "{header} must be forwarded when stripping is off"
+        );
+    }
+
+    state.strip_privacy_headers = true;
+    for header in vellaveto_http_proxy_shield::PRIVACY_STRIP_HEADERS {
+        assert!(
+            super::upstream::strip_for_privacy(&state, header),
+            "{header} must be withheld when stripping is on"
+        );
+    }
+
+    // Header matching is case-insensitive, since HTTP header names are.
+    assert!(super::upstream::strip_for_privacy(&state, "TraceParent"));
+    assert!(super::upstream::strip_for_privacy(&state, "X-Request-Id"));
+
+    // Headers the proxy needs are never stripped by this path.
+    for keep in ["authorization", "content-type", "accept", "last-event-id"] {
+        assert!(
+            !super::upstream::strip_for_privacy(&state, keep),
+            "{keep} must never be stripped"
+        );
     }
 }
 

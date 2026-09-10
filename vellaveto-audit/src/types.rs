@@ -138,10 +138,22 @@ pub struct Checkpoint {
 impl Checkpoint {
     /// Compute the canonical content that is signed.
     ///
-    /// Content = SHA-256(id || timestamp || entry_count_le || chain_head_hash)
+    /// Content = SHA-256(domain || id || timestamp || entry_count_le || chain_head_hash)
     /// Each field is length-prefixed with u64 LE to prevent boundary collisions.
+    ///
+    /// SECURITY (DOC-CRED-2): The digest is seeded with `DOMAIN_CHECKPOINT`, so a
+    /// signature over a checkpoint cannot be presented as a signature over any
+    /// other signed artifact type. See `vellaveto_types::signing_domain`.
     pub(crate) fn signing_content(&self) -> Vec<u8> {
-        self.signing_content_internal(true)
+        self.signing_content_internal(true, true)
+    }
+
+    /// Checkpoint signing content prior to domain separation.
+    ///
+    /// SECURITY (DOC-CRED-2): Verification falls back to this so checkpoints
+    /// signed before domain separation keep verifying. Never used for signing.
+    pub(crate) fn undomained_signing_content(&self) -> Vec<u8> {
+        self.signing_content_internal(true, false)
     }
 
     /// Legacy checkpoint signing content prior to signature-version binding.
@@ -150,11 +162,21 @@ impl Checkpoint {
     /// fallback for legacy v1 checkpoints that were signed before the
     /// signature_version field was bound into the Ed25519 signature.
     pub(crate) fn legacy_signing_content(&self) -> Vec<u8> {
-        self.signing_content_internal(false)
+        self.signing_content_internal(false, false)
     }
 
-    fn signing_content_internal(&self, bind_signature_version: bool) -> Vec<u8> {
-        let mut hasher = Sha256::new();
+    fn signing_content_internal(
+        &self,
+        bind_signature_version: bool,
+        domain_separated: bool,
+    ) -> Vec<u8> {
+        let mut hasher = if domain_separated {
+            vellaveto_types::signing_domain::domain_separated_hasher(
+                vellaveto_types::signing_domain::DOMAIN_CHECKPOINT,
+            )
+        } else {
+            Sha256::new()
+        };
         Self::hash_field(&mut hasher, self.id.as_bytes());
         Self::hash_field(&mut hasher, self.timestamp.as_bytes());
         Self::hash_field(&mut hasher, &(self.entry_count as u64).to_le_bytes());

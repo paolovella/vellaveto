@@ -457,6 +457,55 @@ impl ProxyBridge {
         self
     }
 
+    /// Enable per-session PII isolation, replacing the process-global sanitizer.
+    ///
+    /// Each session gets its own mapping table, so a placeholder minted in one
+    /// session is meaningless in another. Takes precedence over
+    /// [`with_shield_sanitizer`] when both are set, since two mapping tables
+    /// would make desanitization consult the wrong one.
+    ///
+    /// [`with_shield_sanitizer`]: Self::with_shield_sanitizer
+    #[cfg(feature = "consumer-shield")]
+    pub fn with_session_isolator(
+        mut self,
+        isolator: Arc<vellaveto_mcp_shield::SessionIsolator>,
+    ) -> Self {
+        self.shield_session_isolator = Some(isolator);
+        self
+    }
+
+    /// Set the encrypted local audit store for shield interaction history.
+    ///
+    /// Without this, a configured [`LocalAuditManager`] records nothing: the
+    /// store is created on disk but never written. Every intercepted request
+    /// and response is appended here, encrypted with XChaCha20-Poly1305 under
+    /// an Argon2id-derived key, and chained into the Merkle tree when enabled.
+    ///
+    /// This is separate from the plaintext decision log the bridge already
+    /// writes through its `AuditLogger`: that records policy verdicts, this
+    /// records the interaction content those verdicts were about.
+    ///
+    /// [`LocalAuditManager`]: vellaveto_mcp_shield::LocalAuditManager
+    #[cfg(feature = "consumer-shield")]
+    pub fn with_shield_audit(
+        mut self,
+        audit: Arc<tokio::sync::Mutex<vellaveto_mcp_shield::LocalAuditManager>>,
+    ) -> Self {
+        self.shield_audit = Some(audit);
+        self
+    }
+
+    /// Set whether a failed encrypted-audit write fails the request.
+    ///
+    /// Default `false`: a write failure is logged and the request proceeds, so
+    /// a full disk does not take the shield offline. Set `true` where the audit
+    /// trail is the point and a gap in it is worse than a refused request.
+    #[cfg(feature = "consumer-shield")]
+    pub fn with_shield_audit_strict(mut self, strict: bool) -> Self {
+        self.shield_audit_strict = strict;
+        self
+    }
+
     /// Set whether to desanitize inbound responses (restore PII from placeholders).
     /// When false, PII placeholders are preserved in responses.
     #[cfg(feature = "consumer-shield")]

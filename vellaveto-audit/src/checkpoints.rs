@@ -346,10 +346,22 @@ impl AuditLogger {
                 .map_err(|_| AuditError::Validation("Signature must be 64 bytes".to_string()))?;
             let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
 
-            // 5. Verify Ed25519 signature over canonical content
+            // 5. Verify Ed25519 signature over canonical content.
+            //
+            // Tried newest-first: domain-separated (DOC-CRED-2), then the
+            // undomained form for checkpoints signed before that change, then
+            // the pre-signature-version form for v1 checkpoints (R238-AUD-5).
+            // New checkpoints are only ever signed with the domain-separated
+            // form; the fallbacks exist so existing chains keep verifying.
             let content = cp.signing_content();
+            let undomained_content = cp.undomained_signing_content();
             let verified_content = if verifying_key.verify(&content, &signature).is_ok() {
                 content
+            } else if verifying_key
+                .verify(&undomained_content, &signature)
+                .is_ok()
+            {
+                undomained_content
             } else if cp.signature_version.unwrap_or(1) <= 1 {
                 let legacy_content = cp.legacy_signing_content();
                 if verifying_key.verify(&legacy_content, &signature).is_ok() {
