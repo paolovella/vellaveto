@@ -10,7 +10,7 @@
 //! MCPSEC: MCP Security Benchmark Framework
 //!
 //! Vendor-neutral security evaluation for MCP gateways.
-//! Tests 10 security properties across 16 attack classes (105 tests).
+//! Tests 10 security properties across 17 attack classes (116 tests).
 
 pub mod attacks;
 pub mod compare;
@@ -101,8 +101,16 @@ pub struct BenchmarkResult {
     pub gateway: String,
     /// Gateway version (if reported).
     pub gateway_version: String,
-    /// Overall score (0-100).
+    /// Overall SECURITY score (0-100), weighted across properties P1-P10.
     pub overall_score: f64,
+    /// Availability score (0-100): the percentage of A17 legitimate-traffic
+    /// checks that were allowed through.
+    ///
+    /// Separate from `overall_score` on purpose. A gateway that refuses every
+    /// request scores highly on the security axis by construction — 57 of the
+    /// security tests pass on a denial alone — so the security number cannot
+    /// distinguish "secure" from "closed". This one can.
+    pub availability_score: f64,
     /// Tier (0-5).
     pub tier: u8,
     /// Tier name.
@@ -136,6 +144,7 @@ pub async fn run_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
     .await;
     let properties = scoring::calculate_property_scores(&attack_results);
     let overall_score = scoring::calculate_overall_score(&properties);
+    let availability_score = scoring::calculate_availability_score(&attack_results);
     let tier = scoring::score_to_tier(overall_score);
     let tier_name = scoring::tier_name(tier);
 
@@ -149,6 +158,7 @@ pub async fn run_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
         gateway: config.gateway.base_url.clone(),
         gateway_version: String::new(),
         overall_score,
+        availability_score,
         tier,
         tier_name: tier_name.to_string(),
         properties,
@@ -274,6 +284,7 @@ mod tests {
             gateway: "http://localhost:3000".to_string(),
             gateway_version: "6.0.0".to_string(),
             overall_score: 75.0,
+            availability_score: 100.0,
             tier: 3,
             tier_name: "Strong".to_string(),
             properties: vec![],

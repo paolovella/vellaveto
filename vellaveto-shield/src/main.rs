@@ -150,7 +150,9 @@ async fn main() -> Result<()> {
                 pattern: p.pattern.clone(),
             })
             .collect();
-        let scanner = vellaveto_audit::PiiScanner::new(&custom_patterns);
+        // Sanitizer profile, not the audit profile: this text is going to a
+        // provider, so file paths must be replaced. Audit keeps them.
+        let scanner = vellaveto_audit::PiiScanner::new_for_sanitizer(&custom_patterns);
         let sanitizer = Arc::new(vellaveto_mcp_shield::QuerySanitizer::new(scanner));
         tracing::info!("Shield sanitizer: ENABLED");
         Some(sanitizer)

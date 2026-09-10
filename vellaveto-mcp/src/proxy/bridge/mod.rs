@@ -55,6 +55,15 @@ pub struct ProxyBridge {
     engine: PolicyEngine,
     policies: Vec<Policy>,
     audit: Arc<AuditLogger>,
+    /// When true, an audit write failure denies the request instead of being
+    /// logged and ignored.
+    ///
+    /// SECURITY (R271-MCP-1): `audit.strict_mode` promises that "audit logging
+    /// failures cause requests to be denied instead of proceeding without an
+    /// audit trail … every decision must be recorded". The HTTP transports
+    /// honour it; the stdio relay had no notion of it at all, so the same
+    /// setting meant different things depending on how an agent connected.
+    audit_strict_mode: bool,
     request_timeout: Duration,
     enable_trace: bool,
     /// Optional custom injection scanner. When `None`, uses the default
@@ -309,6 +318,7 @@ impl ProxyBridge {
             engine,
             policies,
             audit,
+            audit_strict_mode: false,
             request_timeout: DEFAULT_REQUEST_TIMEOUT,
             enable_trace: false,
             injection_scanner: None,
