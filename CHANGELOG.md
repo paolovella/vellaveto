@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cases, so the benchmark's own model of a correct gateway was
   indistinguishable from a brick wall. `ATTACKS.md` now documents A17, which it
   had omitted.
+### Security
+
+- **Task resume replay protection no longer forgets nonces under load**
+  (DOC-CRED-6). `SecureTask::record_nonce` evicted the oldest nonce FIFO once
+  `max_nonces` was reached, and an evicted nonce becomes replayable —
+  `is_nonce_seen` reports a captured resume request carrying it as fresh again.
+  New `SecureTask::try_record_nonce` refuses instead of evicting, and
+  `resume_task` denies the resume when it returns false. `record_nonce` is
+  deprecated rather than removed, so no caller breaks.
+
+  Deliberately **not** fixed by evicting on a time window, which is the usual
+  answer: `TaskResumeRequest` carries no timestamp, so nothing bounds a
+  request's own freshness and the nonce cache is the only barrier to replay.
+  Expiring nonces would make every captured request replayable by waiting out
+  the window — a worse failure than the one being fixed. A time window becomes
+  correct only once the request carries a signed timestamp checked against it.
 
 ## [7.0.0] - 2026-08-04
 

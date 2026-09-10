@@ -79,7 +79,11 @@ scripts/run-deepeval.sh
 scripts/run-quality-gates.sh
 
 # Fuzz artifacts
-fuzz/Cargo.lock
+# fuzz/Cargo.lock is deliberately NOT ignored: `fuzz` is excluded from the
+# workspace, so it has no shared lockfile, and without one of its own CI
+# re-resolved every dependency on every run. A broken third-party release
+# (tinyvec 1.13.0) then failed the job with no change to this repository.
+# The lockfile is a dependency pin, not a build artifact.
 fuzz/target/
 
 # SBOM output (generated, not committed)

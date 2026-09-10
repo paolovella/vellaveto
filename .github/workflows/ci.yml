@@ -334,7 +334,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -343,11 +342,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          RUSTUP_TOOLCHAIN: stable
+      # Pinned and --locked, matching cargo-deny / cargo-vet /
+      # cargo-semver-checks / cargo-fuzz elsewhere in this file.
+      #
+      # This replaced rustsec/audit-check, which ran an unpinned, unlocked
+      # `cargo install cargo-audit`. That re-resolved cargo-audit's own
+      # dependencies to whatever was newest, so when tinyvec 1.13.0 shipped
+      # broken ("cannot find macro `vec` in this scope") the install failed and
+      # this job stopped auditing anything — with no change to this repository.
+      # `--locked` builds cargo-audit against its own published lockfile, so a
+      # third-party release can no longer break this check.
+      #
+      # Trade-off: the action posted advisories as check annotations; a bare
+      # `cargo audit` fails the job with the advisory text in the log instead.
+      # Plainer, but a check that cannot build is worth less than a plain one.
+      # No GITHUB_TOKEN or `checks: write` needed as a result.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Check for security advisories
+        run: cargo audit
 
   # ───────────────────────────────────────────────────────
   # 6. Fuzz target compilation check
@@ -380,9 +393,15 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.1 --locked
 
+      # --locked against the committed fuzz/Cargo.lock. `fuzz` is excluded from
+      # the workspace (root Cargo.toml), so it does not share the root lockfile
+      # and, without one of its own, re-resolved every dependency on every run.
+      # That is how tinyvec 1.13.0 — published broken — reached this job and
+      # failed it with no change to this repository. Same lesson as the pinned
+      # toolchain above, one layer down: pin the tool AND the code's deps.
       - name: Check fuzz targets compile
         working-directory: fuzz
-        run: cargo +nightly-2026-06-01 check --all-targets
+        run: cargo +nightly-2026-06-01 check --all-targets --locked
 
   # ───────────────────────────────────────────────────────
   # 7. Benchmark regression gate (push to main only)
@@ -618,7 +637,14 @@ jobs:
   coq-verification:
     name: Coq Formal Proofs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 30, matching the `coq` job in formal-verification.yml, which installs the
+    # same package and builds the same proofs. `apt-get install coq` pulls
+    # 288 MB of archives (~1 GB installed), and when the Ubuntu mirror is slow
+    # that alone can consume a whole 10-minute budget: on #370 the install ran
+    # 07:09:26 -> 07:19:26 and the job was cancelled on timeout before a single
+    # proof was built, while the 30-minute job on the same commit passed. The
+    # proofs take seconds; the download does not.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
