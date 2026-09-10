@@ -1094,6 +1094,214 @@ async fn test_initialize_chain_recovers_next_global_sequence() {
     assert_eq!(entries.last().unwrap().sequence, 3);
 }
 
+/// Collect every sequence number written under `log_path`, across the rotated
+/// files and the currently active one.
+///
+/// `list_rotated_files` sorts lexically, which is a true chronological order
+/// here because `rotated_path` formats the name as
+/// `<stem>.<timestamp>-<seq:010>.<ext>` — the timestamp dominates and the
+/// zero-padded sequence breaks ties.
+async fn rotated_sequences(log_path: &std::path::Path) -> Vec<u64> {
+    let reader = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(0);
+    let mut sequences = Vec::new();
+    for rotated in reader.list_rotated_files().unwrap() {
+        let rotated_reader = AuditLogger::new(rotated).with_max_file_size(0);
+        sequences.extend(
+            rotated_reader
+                .load_entries()
+                .await
+                .unwrap()
+                .iter()
+                .map(|e| e.sequence),
+        );
+    }
+    sequences
+}
+
+async fn all_sequences_across_rotations(log_path: &std::path::Path) -> Vec<u64> {
+    let reader = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(0);
+    let mut sequences = rotated_sequences(log_path).await;
+    sequences.extend(
+        reader
+            .load_entries()
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.sequence),
+    );
+    sequences
+}
+
+fn assert_no_duplicate_sequences(sequences: &[u64], context: &str) {
+    let mut sorted = sequences.to_vec();
+    sorted.sort_unstable();
+    let mut deduped = sorted.clone();
+    deduped.dedup();
+    assert_eq!(
+        sorted, deduped,
+        "{context}: sequence numbers were reused across the rotation boundary. \
+         Observed (sorted): {sorted:?}"
+    );
+}
+
+/// Write entries until rotation has fired at least once.
+async fn seed_rotated_log(log_path: &std::path::Path) -> AuditLogger {
+    let logger = AuditLogger::new(log_path.to_path_buf()).with_max_file_size(200);
+    let action = test_action();
+    for _ in 0..20 {
+        logger
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+    assert!(
+        !logger.list_rotated_files().unwrap().is_empty(),
+        "precondition: rotation actually fired"
+    );
+    logger
+}
+
+/// A restart after rotation must not reuse sequence numbers.
+///
+/// `maybe_rotate` renames the active log away, so until the next append
+/// recreates it there is no active file at all. A process restarting in that
+/// window used to find an empty `load_entries()`, take `initialize_chain`'s
+/// early return, and leave `global_sequence` at 0 — renumbering the next
+/// entries 0, 1, 2, … on top of the sequences already in the rotated file.
+/// That is exactly the reuse the invariant on `AuditLogger::global_sequence`
+/// says cannot happen.
+///
+/// The bar is the **rotated** high-water mark, not the overall one. Entries
+/// still in the active log when it is destroyed leave no durable record — the
+/// manifest describes only what rotation moved aside — so no implementation can
+/// recover their sequences. What recovery must clear is everything the manifest
+/// does know about.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_when_active_log_missing() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let action = test_action();
+
+    let _logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Reproduce the post-rotation, pre-append state: the active log is gone.
+    std::fs::remove_file(&log_path).unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "recovered sequence {recovered} must be past the rotated high-water mark \
+         {rotated_high_water}"
+    );
+
+    for _ in 0..5 {
+        restarted
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+
+    assert_no_duplicate_sequences(
+        &all_sequences_across_rotations(&log_path).await,
+        "restart with missing active log",
+    );
+}
+
+/// The same reuse, reached without any crash-timing window.
+///
+/// `load_entries` skips corrupt lines with a warning rather than failing, so a
+/// wholly corrupt active log also yields an empty `entries` and takes the same
+/// early return.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_when_active_log_corrupt() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let _logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Every line unparseable — load_entries returns empty, not an error.
+    std::fs::write(&log_path, "{ not json\n{ also not json\n").unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "recovered sequence {recovered} must be past the rotated high-water mark \
+         {rotated_high_water}"
+    );
+}
+
+/// Manifests written before `max_sequence` existed must still recover.
+///
+/// The fallback reconstructs the high-water mark from the `entry_count` fields
+/// those manifests already carry. Stripping the new field models an operator
+/// upgrading a deployment whose manifest predates it.
+#[tokio::test]
+async fn test_initialize_chain_recovers_sequence_from_legacy_manifest() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let logger = seed_rotated_log(&log_path).await;
+    let rotated_high_water = *rotated_sequences(&log_path).await.iter().max().unwrap();
+
+    // Rewrite the manifest without `max_sequence`, as an older build would have.
+    let manifest_path = logger.rotation_manifest_path();
+    let original = std::fs::read_to_string(&manifest_path).unwrap();
+    assert!(
+        original.contains("max_sequence"),
+        "precondition: manifest carries the new field before stripping"
+    );
+    let stripped: String = original
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let mut entry: serde_json::Value = serde_json::from_str(line).unwrap();
+            entry.as_object_mut().unwrap().remove("max_sequence");
+            format!("{entry}\n")
+        })
+        .collect();
+    std::fs::write(&manifest_path, stripped).unwrap();
+    std::fs::remove_file(&log_path).unwrap();
+
+    let restarted = AuditLogger::new(log_path.clone()).with_max_file_size(200);
+    restarted.initialize_chain().await.unwrap();
+    let recovered = restarted.global_sequence.load(Ordering::SeqCst);
+    assert!(
+        recovered > rotated_high_water,
+        "legacy-manifest recovery {recovered} must be past the rotated high-water \
+         mark {rotated_high_water}"
+    );
+}
+
+/// Adding `max_sequence` to the manifest must not break cross-rotation
+/// verification — the backward-compatibility claim, asserted rather than assumed.
+#[tokio::test]
+async fn test_verify_across_rotations_accepts_max_sequence_field() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let logger = seed_rotated_log(&log_path).await;
+    assert!(
+        std::fs::read_to_string(logger.rotation_manifest_path())
+            .unwrap()
+            .contains("max_sequence"),
+        "precondition: manifest carries the new field"
+    );
+
+    let verification = logger.verify_across_rotations().await.unwrap();
+    assert!(
+        verification.valid,
+        "cross-rotation verification failed: {:?}",
+        verification.first_failure
+    );
+    assert!(verification.files_checked > 0);
+}
+
 #[tokio::test]
 async fn test_rotation_disabled_when_zero() {
     let dir = TempDir::new().unwrap();
@@ -4647,6 +4855,70 @@ fn test_logger_with_sink_fatal_flag() {
     );
 }
 
+/// A sink whose writes always fail. `NoOpSink` returns Ok unconditionally, so
+/// until this existed the crate had no way to exercise `sink_failure_fatal` —
+/// the tests above set the flag and assert only that the boolean is stored.
+#[derive(Debug)]
+struct AlwaysFailingSink;
+
+#[async_trait::async_trait]
+impl crate::sink::AuditSink for AlwaysFailingSink {
+    async fn sink(&self, _entry: &crate::AuditEntry) -> Result<(), crate::sink::SinkError> {
+        Err(crate::sink::SinkError::Write(
+            "injected failure".to_string(),
+        ))
+    }
+
+    async fn flush(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    fn is_healthy(&self) -> bool {
+        false
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_true_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), true);
+
+    assert!(
+        logger
+            .log_entry(&test_action(), &Verdict::Allow, json!({}))
+            .await
+            .is_err(),
+        "fatal mode must surface a sink write failure to the caller"
+    );
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_false_persists_to_file() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), false);
+
+    logger
+        .log_entry(&test_action(), &Verdict::Allow, json!({}))
+        .await
+        .expect("non-fatal mode must not fail the write");
+
+    assert_eq!(
+        logger.load_entries().await.unwrap().len(),
+        1,
+        "the file log is the source of truth and must still hold the entry"
+    );
+}
+
 // ── FileAuditQuery tests ─────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -5629,6 +5901,118 @@ async fn test_r253_aud6_target_path_too_long_rejected() {
     );
 }
 
+// ── Audit write-failure counter (R276-AUD-1) ────────────────────────────────
+//
+// The counter is emitted from inside the logger so it cannot be bypassed by a
+// caller that ignores the returned error — which twenty-five call sites in this
+// workspace did (`let _ = ...`) until recently. These assert it actually fires.
+
+/// Minimal `Recorder` that counts increments for one counter name.
+///
+/// `metrics` 0.24 ships no test recorder, so this implements the trait against a
+/// shared `AtomicU64`. Only `register_counter` does anything; the rest satisfy
+/// the trait.
+#[derive(Default)]
+struct CountingRecorder {
+    hits: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl metrics::Recorder for CountingRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        if key.name() == "vellaveto_audit_write_failures_total" {
+            metrics::Counter::from_arc(self.hits.clone())
+        } else {
+            metrics::Counter::noop()
+        }
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// Run `f` with the counting recorder installed, returning the hit count.
+///
+/// `with_local_recorder` is synchronous, so the runtime is built inside the
+/// closure rather than using `#[tokio::test]` around it.
+fn count_audit_failures<F>(f: F) -> u64
+where
+    F: FnOnce(&tokio::runtime::Runtime),
+{
+    let recorder = CountingRecorder::default();
+    let hits = recorder.hits.clone();
+    metrics::with_local_recorder(&recorder, || {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        f(&rt);
+    });
+    hits.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn test_audit_write_failure_increments_counter() {
+    let dir = TempDir::new().unwrap();
+    // Point the log at a directory so the append fails with EISDIR.
+    let blocked = dir.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+
+    let hits = count_audit_failures(|rt| {
+        let logger = AuditLogger::new(blocked.clone());
+        let result = rt.block_on(logger.log_entry(&test_action(), &Verdict::Allow, json!({})));
+        assert!(
+            result.is_err(),
+            "the write must fail for this test to mean anything"
+        );
+    });
+
+    assert_eq!(
+        hits, 1,
+        "a failed audit write must be counted, got {hits} increments"
+    );
+}
+
+#[test]
+fn test_successful_audit_write_does_not_increment_counter() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let hits = count_audit_failures(|rt| {
+        let logger = AuditLogger::new(log_path.clone());
+        rt.block_on(logger.log_entry(&test_action(), &Verdict::Allow, json!({})))
+            .expect("write should succeed");
+    });
+
+    assert_eq!(
+        hits, 0,
+        "a successful write must not be counted as a failure"
+    );
+}
 // ═══════════════════════════════════════════════════════
 // Append-time timestamp monotonicity
 //

@@ -1467,7 +1467,10 @@ async fn relay_client_to_upstream(
                                                     Some(&session_id),
                                                     Some(effective_security_context),
                                                 );
-                                            let _ = state
+                                            // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                            // audit write here was invisible. The denial below is unchanged —
+                                            // this only makes the lost record observable.
+                                            if let Err(e) = state
                                                 .audit
                                                 .log_entry_with_acis(
                                                     &action,
@@ -1482,7 +1485,10 @@ async fn relay_client_to_upstream(
                                                     }),
                                                     envelope,
                                                 )
-                                                .await;
+                                                .await
+                                            {
+                                                tracing::warn!("Failed to audit denial: {}", e);
+                                            }
                                             let error = make_ws_error_response(
                                                 Some(id),
                                                 -32001,
@@ -1609,7 +1615,10 @@ async fn relay_client_to_upstream(
                                                     Some(&session_id),
                                                     Some(effective_security_context),
                                                 );
-                                            let _ = state
+                                            // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                            // audit write here was invisible. The denial below is unchanged —
+                                            // this only makes the lost record observable.
+                                            if let Err(e) = state
                                                 .audit
                                                 .log_entry_with_acis(
                                                     &action,
@@ -1624,7 +1633,10 @@ async fn relay_client_to_upstream(
                                                     }),
                                                     envelope,
                                                 )
-                                                .await;
+                                                .await
+                                            {
+                                                tracing::warn!("Failed to audit denial: {}", e);
+                                            }
                                             let error = make_ws_error_response(
                                                 Some(id),
                                                 -32001,
@@ -1958,7 +1970,10 @@ async fn relay_client_to_upstream(
                                     if let Some(registry) = matched_approval_registry {
                                         audit_metadata["registry"] = json!(registry);
                                     }
-                                    let _ = state
+                                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                    // audit write here was invisible. The denial below is unchanged —
+                                    // this only makes the lost record observable.
+                                    if let Err(e) = state
                                         .audit
                                         .log_entry_with_acis(
                                             &action,
@@ -1966,7 +1981,10 @@ async fn relay_client_to_upstream(
                                             audit_metadata,
                                             envelope,
                                         )
-                                        .await;
+                                        .await
+                                    {
+                                        tracing::warn!("Failed to audit denial: {}", e);
+                                    }
                                     let error_resp = make_ws_error_response(
                                         Some(id),
                                         -32001,
@@ -2723,7 +2741,10 @@ async fn relay_client_to_upstream(
                                             Some(&session_id),
                                             Some(effective_security_context),
                                         );
-                                    let _ = state
+                                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                    // audit write here was invisible. The denial below is unchanged —
+                                    // this only makes the lost record observable.
+                                    if let Err(e) = state
                                         .audit
                                         .log_entry_with_acis(
                                             &action,
@@ -2738,7 +2759,10 @@ async fn relay_client_to_upstream(
                                             }),
                                             envelope,
                                         )
-                                        .await;
+                                        .await
+                                    {
+                                        tracing::warn!("Failed to audit denial: {}", e);
+                                    }
                                     let error_resp = make_ws_error_response(
                                         Some(id),
                                         -32001,
@@ -3571,7 +3595,10 @@ async fn relay_client_to_upstream(
                                             Some(&session_id),
                                             Some(effective_security_context),
                                         );
-                                    let _ = state
+                                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                    // audit write here was invisible. The denial below is unchanged —
+                                    // this only makes the lost record observable.
+                                    if let Err(e) = state
                                         .audit
                                         .log_entry_with_acis(
                                             &action,
@@ -3587,7 +3614,10 @@ async fn relay_client_to_upstream(
                                             }),
                                             envelope,
                                         )
-                                        .await;
+                                        .await
+                                    {
+                                        tracing::warn!("Failed to audit denial: {}", e);
+                                    }
                                     let error_resp = make_ws_error_response(
                                         Some(id),
                                         -32001,
@@ -4187,7 +4217,10 @@ async fn relay_client_to_upstream(
                                             Some(&session_id),
                                             Some(effective_security_context),
                                         );
-                                    let _ = state
+                                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                                    // audit write here was invisible. The denial below is unchanged —
+                                    // this only makes the lost record observable.
+                                    if let Err(e) = state
                                         .audit
                                         .log_entry_with_acis(
                                             &action,
@@ -4203,7 +4236,10 @@ async fn relay_client_to_upstream(
                                             }),
                                             envelope,
                                         )
-                                        .await;
+                                        .await
+                                    {
+                                        tracing::warn!("Failed to audit denial: {}", e);
+                                    }
                                     let error_resp = make_ws_error_response(
                                         Some(id),
                                         -32001,

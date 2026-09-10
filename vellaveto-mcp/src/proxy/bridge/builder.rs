@@ -38,6 +38,16 @@ impl ProxyBridge {
         self
     }
 
+    /// Deny requests whose audit entry could not be written.
+    ///
+    /// SECURITY (R271-MCP-1): mirrors `audit.strict_mode` on the HTTP paths so
+    /// the setting means the same thing over stdio. Defaults to false, which
+    /// keeps the previous behaviour: log the failure and continue.
+    pub fn with_audit_strict_mode(mut self, strict: bool) -> Self {
+        self.audit_strict_mode = strict;
+        self
+    }
+
     /// Set manifest verification config. When set, the proxy pins the first
     /// tools/list response as a manifest and verifies subsequent responses.
     pub fn with_manifest_config(mut self, config: ManifestConfig) -> Self {

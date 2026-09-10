@@ -336,7 +336,9 @@ impl AuditLogger {
         verdict: &Verdict,
         metadata: serde_json::Value,
     ) -> Result<(), AuditError> {
-        self.log_entry_inner(action, verdict, metadata, None).await
+        self.log_entry_inner(action, verdict, metadata, None)
+            .await
+            .inspect_err(|_| Self::record_write_failure())
     }
 
     /// Log an action-verdict pair with a dedicated ACIS decision envelope.
@@ -352,12 +354,35 @@ impl AuditLogger {
         acis_envelope: AcisDecisionEnvelope,
     ) -> Result<(), AuditError> {
         if let Err(e) = acis_envelope.validate() {
+            // Counted too: a rejected envelope means no entry was written, which
+            // is the thing the counter exists to make visible. R244-ACIS-1 moved
+            // this validation ahead of persistence, so this branch is a real
+            // source of unwritten decisions, not just a malformed-input path.
+            Self::record_write_failure();
             return Err(AuditError::Validation(format!(
                 "ACIS envelope validation failed: {e}"
             )));
         }
         self.log_entry_inner(action, verdict, metadata, Some(acis_envelope))
             .await
+            .inspect_err(|_| Self::record_write_failure())
+    }
+
+    /// Count an audit write that did not happen.
+    ///
+    /// SECURITY (R276-AUD-1): emitted from inside the logger rather than at the
+    /// call sites. Both public entry points funnel here, so every caller in the
+    /// workspace is covered — including ones that discard the returned error,
+    /// and any added later. Instrumenting call sites instead would mean roughly
+    /// three hundred edits, each of which can be forgotten; twenty-five of them
+    /// had already dropped the error entirely (`let _ = ...`), which is the
+    /// defect this closes.
+    ///
+    /// Deliberately unlabelled. The logger does not know the transport, the
+    /// tenant, or the route, and a label guessed from what happens to be in
+    /// scope would be wrong. A single total is honest and enough to alarm on.
+    fn record_write_failure() {
+        metrics::counter!("vellaveto_audit_write_failures_total").increment(1);
     }
 
     async fn log_entry_inner(
