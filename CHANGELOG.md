@@ -50,6 +50,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cases, so the benchmark's own model of a correct gateway was
   indistinguishable from a brick wall. `ATTACKS.md` now documents A17, which it
   had omitted.
+### Added
+
+- **Traffic padding, negotiated per client** (`shield.traffic_padding`).
+  Responses are padded to fixed size buckets only for clients that opt in with
+  `X-Vellaveto-Padding: v1`; padded responses carry
+  `X-Vellaveto-Padding-Applied: v1`. Any client that does not ask — which is
+  every standard MCP client — gets the unpadded body unchanged, because the
+  framing is not valid JSON. No shipped client negotiates it yet.
+- **`shield.strip_privacy_headers`** (default `false`): withholds `traceparent`,
+  `tracestate`, and the `x-*-trace-id` family from upstream requests, which an
+  upstream operator would otherwise use to correlate a user's requests across
+  sessions. Applies to the HTTP proxy. Off by default because it also disables
+  distributed tracing through the proxy.
+
+### Changed
+
+- **`shield.session_isolation` now also selects per-session PII isolation.**
+  Previously it enabled only context-window isolation while PII sanitization used
+  one process-global mapping table. With it on, each session gets its own mapping
+  table and a placeholder minted in one session is meaningless in another. The
+  process-global sanitizer remains the path when the flag is off.
+  `SessionIsolator` gained custom-pattern support so operator-configured PII
+  patterns survive the switch, and a JSON API for the bridge.
+- Placeholder restoration binds against the session's whole bounded history
+  rather than only its most recent outbound message, so responses to pipelined
+  JSON-RPC requests no longer fail closed. A placeholder the session never
+  emitted is still refused.
+
 ### Fixed
 
 - **Consumer Shield: the encrypted local audit now records.** `LocalAuditManager`
@@ -82,34 +110,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This is defence in depth rather than a patched exploit: every verifier
   recomputes the digest from the object being checked, so cross-type transfer
   would have required a SHA-256 collision.
-
-### Added
-
-- **Traffic padding, negotiated per client** (`shield.traffic_padding`).
-  Responses are padded to fixed size buckets only for clients that opt in with
-  `X-Vellaveto-Padding: v1`; padded responses carry
-  `X-Vellaveto-Padding-Applied: v1`. Any client that does not ask — which is
-  every standard MCP client — gets the unpadded body unchanged, because the
-  framing is not valid JSON. No shipped client negotiates it yet.
-- **`shield.strip_privacy_headers`** (default `false`): withholds `traceparent`,
-  `tracestate`, and the `x-*-trace-id` family from upstream requests, which an
-  upstream operator would otherwise use to correlate a user's requests across
-  sessions. Applies to the HTTP proxy. Off by default because it also disables
-  distributed tracing through the proxy.
-
-### Changed
-
-- **`shield.session_isolation` now also selects per-session PII isolation.**
-  Previously it enabled only context-window isolation while PII sanitization used
-  one process-global mapping table. With it on, each session gets its own mapping
-  table and a placeholder minted in one session is meaningless in another. The
-  process-global sanitizer remains the path when the flag is off.
-  `SessionIsolator` gained custom-pattern support so operator-configured PII
-  patterns survive the switch, and a JSON API for the bridge.
-- Placeholder restoration binds against the session's whole bounded history
-  rather than only its most recent outbound message, so responses to pipelined
-  JSON-RPC requests no longer fail closed. A placeholder the session never
-  emitted is still refused.
 
 ### Documentation
 

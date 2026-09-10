@@ -447,9 +447,21 @@ Full details: [Security Guarantees](docs/SECURITY_GUARANTEES.md) | [Threat Model
 
 ### MCPSEC Benchmark
 
-We wrote [MCPSEC](mcpsec/), an open security benchmark for MCP gateways (Apache-2.0), defining 10 security properties and 105 reproducible attack test cases across 16 attack classes.
+We wrote [MCPSEC](mcpsec/), an open security benchmark for MCP gateways (Apache-2.0), defining 10 security properties and 116 reproducible attack test cases across 17 attack classes, scored on **two axes**: security, and availability — the share of legitimate traffic allowed through. Both matter, because a gateway that denies every request scores highly on security by construction and is useless.
 
-**We also wrote the gateway, and the pass criteria.** VellaVeto scored 100/100 on the last published run ([v6.0.0 reference run](mcpsec/results/vellaveto-v6.0.json)), and that number is worth what a self-graded exam is worth: a regression result showing the suite still passes, not independent validation. The test selection reflects the attacks this project chose to think about — protocol replay, for instance, has no class in the suite at all. No third-party gateway has been benchmarked, and we do not publish estimated scores for other products.
+**We also wrote the gateway, and the pass criteria.** Whatever VellaVeto scores here is worth what a self-graded exam is worth: a regression result showing the suite still passes, not independent validation. The test selection reflects the attacks this project chose to think about — protocol replay, for instance, has no class in the suite at all. No third-party gateway has been benchmarked, and we do not publish estimated scores for other products.
+
+With that caveat, the current reference result is [mcpsec/results/vellaveto-v7.0.json](mcpsec/results/vellaveto-v7.0.json), measured against the shipped [`vault`](examples/presets/vault.toml) preset:
+
+| Axis | Score |
+|---|---|
+| Security | **94.9% (Tier 4: Comprehensive)** |
+| Availability | **63.6%** |
+| Tests | 103/116 passed |
+
+The result file records the config, its SHA-256, the commit and both commands, so it can be reproduced. The nine security failures are configuration and surface rather than absent capability: A10.4 needs rate limits, which `vault` does not configure; A14.1–A14.4 need `schema_poisoning.enabled`, which defaults to `false`; A13.1–A13.4 are cross-call secret splitting, a session-scoped defence that lives in the MCP relay and cannot apply to the stateless `/api/evaluate` endpoint this benchmark targets.
+
+The earlier published figure of 100/100 (Tier 5) recorded no config, no command and no commit, and re-running the benchmark across all 18 shipped presets did not reproduce it on any of them. [That file](mcpsec/results/vellaveto-v6.1.json) is retained as a historical record and marked superseded.
 
 What the benchmark is actually good for is that it is reproducible. Run it against any MCP gateway, including ours, and check the result yourself:
 

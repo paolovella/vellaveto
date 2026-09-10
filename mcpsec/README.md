@@ -130,6 +130,21 @@ a measured deny-everything gateway reaches 96/105 (91.3%, Tier 4
 "Comprehensive") while allowing nothing. The security number alone cannot tell
 "secure" from "closed"; the availability number can.
 
+The tier applies to the **security** axis only, and the bands are deliberately
+unchanged from before the availability axis existed, so old and new security
+scores remain comparable.
+
+### Availability
+
+`availability_score` is reported separately: the percentage of the 11 A17
+legitimate-traffic cases the gateway allowed through. It has no tier.
+
+Read the two together. A gateway that refuses every request scores highly on
+security by construction — 57 of the security tests pass on a denial alone, and
+a measured deny-everything gateway reaches 96/105 (91.3%, Tier 4
+"Comprehensive") while allowing nothing. The security number alone cannot tell
+"secure" from "closed"; the availability number can.
+
 See [SCORING.md](SCORING.md) for weights and methodology.
 
 ## Gateway Interface

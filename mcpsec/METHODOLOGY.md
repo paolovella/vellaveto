@@ -46,7 +46,6 @@ The harness produces a JSON report with:
 be high while one property fails outright — the floors demote such a result, but
 only the breakdown shows you which property it was. Any published score should
 carry the breakdown with it.
-
 ### Step 3: Generate Report
 
 ```bash
