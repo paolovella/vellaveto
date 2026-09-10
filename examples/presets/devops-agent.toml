@@ -122,8 +122,8 @@ id = "*:*:devops-block-prod"
 [policies.policy_type.Conditional.conditions]
 on_no_match = "continue"
 parameter_constraints = [
-  { param = "environment", op = "exact",   value = "production", on_match = "require_approval", on_missing = "skip" },
-  { param = "namespace",   op = "exact",   value = "production", on_match = "require_approval", on_missing = "skip" },
+  { param = "environment", op = "eq",      value = "production", on_match = "require_approval", on_missing = "skip" },
+  { param = "namespace",   op = "eq",      value = "production", on_match = "require_approval", on_missing = "skip" },
   { param = "*",           op = "glob",    pattern = "*prod*",   on_match = "require_approval", on_missing = "skip" },
 ]
 

@@ -5628,3 +5628,213 @@ async fn test_r253_aud6_target_path_too_long_rejected() {
         "error should mention path length"
     );
 }
+
+// ═══════════════════════════════════════════════════════
+// Append-time timestamp monotonicity
+//
+// verify_chain() has always rejected a chain whose timestamps regress, but
+// nothing stopped such an entry being written. These tests cover the append
+// side: a backwards clock must not be able to produce a log that later fails
+// verification.
+// ═══════════════════════════════════════════════════════
+
+/// Force the chain head's last timestamp into the future, simulating a system
+/// clock that subsequently steps backwards relative to the last entry.
+async fn set_last_timestamp(logger: &AuditLogger, ts: &str) {
+    let mut head = logger.chain_head.lock().await;
+    head.last_timestamp = Some(ts.to_string());
+}
+
+#[tokio::test]
+async fn test_backwards_clock_leaves_chain_verifiable() {
+    // The load-bearing assertion. Before append-time enforcement, an entry
+    // written after a backwards clock step permanently broke verification of
+    // the whole log from that point on.
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"));
+    let action = test_action();
+
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({}))
+        .await
+        .unwrap();
+
+    // Clock jumps far ahead, then the next append sees "now" as being in the past.
+    set_last_timestamp(&logger, "2099-01-01T00:00:00+00:00").await;
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({}))
+        .await
+        .unwrap();
+
+    let verification = logger.verify_chain().await.unwrap();
+    assert!(
+        verification.valid,
+        "a backwards clock must not leave the chain unverifiable (first broken at {:?})",
+        verification.first_broken_at
+    );
+}
+
+#[tokio::test]
+async fn test_regressing_entry_is_clamped_and_flagged() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let logger = AuditLogger::new(log_path.clone());
+    let action = test_action();
+
+    let future = "2099-01-01T00:00:00+00:00";
+    set_last_timestamp(&logger, future).await;
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({"k": "v"}))
+        .await
+        .unwrap();
+
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    let entry: serde_json::Value = serde_json::from_str(contents.lines().next().unwrap()).unwrap();
+
+    // Clamped to the previous timestamp — the earliest value that keeps the
+    // chain non-decreasing, so the clamp never overstates how late the event was.
+    assert_eq!(
+        entry["timestamp"].as_str().unwrap(),
+        future,
+        "regressing entry must be clamped to the previous timestamp"
+    );
+
+    // The record is kept, and the real clock reading is preserved as evidence
+    // rather than discarded.
+    let regression = &entry["metadata"]["timestamp_regression"];
+    assert!(
+        regression.is_object(),
+        "the observed clock reading must be recorded, got: {entry}"
+    );
+    assert_eq!(regression["clamped_to"].as_str().unwrap(), future);
+    let observed = regression["observed"].as_str().unwrap();
+    assert!(
+        observed < future,
+        "observed value {observed} should precede the clamp target"
+    );
+
+    // Original metadata survives alongside the flag.
+    assert_eq!(entry["metadata"]["k"].as_str().unwrap(), "v");
+}
+
+#[tokio::test]
+async fn test_normal_appends_are_untouched() {
+    // The guard must be invisible when the clock behaves: no clamping, no flag.
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let logger = AuditLogger::new(log_path.clone());
+    let action = test_action();
+
+    for _ in 0..3 {
+        logger
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    for line in contents.lines() {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert!(
+            entry["metadata"].get("timestamp_regression").is_none(),
+            "an ordered append must not be flagged: {entry}"
+        );
+    }
+    assert!(logger.verify_chain().await.unwrap().valid);
+}
+
+#[tokio::test]
+async fn test_equal_timestamps_are_accepted() {
+    // The rule is non-decreasing, not strictly increasing: two entries within
+    // the same clock tick are normal and must not be treated as a regression.
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let logger = AuditLogger::new(log_path.clone());
+    let action = test_action();
+
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({}))
+        .await
+        .unwrap();
+    let first: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(&log_path)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    let first_ts = first["timestamp"].as_str().unwrap().to_string();
+
+    set_last_timestamp(&logger, &first_ts).await;
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({}))
+        .await
+        .unwrap();
+
+    let contents = std::fs::read_to_string(&log_path).unwrap();
+    let second: serde_json::Value = serde_json::from_str(contents.lines().nth(1).unwrap()).unwrap();
+    assert!(
+        second["metadata"].get("timestamp_regression").is_none(),
+        "an equal-or-later timestamp is not a regression: {second}"
+    );
+}
+
+#[tokio::test]
+async fn test_timestamp_guard_survives_rotation() {
+    // last_hash resets on rotation because a new file starts a new hash chain.
+    // last_timestamp deliberately does not: wall-clock time does not restart,
+    // and resetting it would let a backwards clock be laundered by triggering
+    // a rotation.
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl")).with_max_file_size(200);
+    let action = test_action();
+
+    set_last_timestamp(&logger, "2099-01-01T00:00:00+00:00").await;
+    for _ in 0..20 {
+        logger
+            .log_entry(&action, &Verdict::Allow, json!({}))
+            .await
+            .unwrap();
+    }
+
+    let head = logger.chain_head.lock().await;
+    assert_eq!(
+        head.last_timestamp.as_deref(),
+        Some("2099-01-01T00:00:00+00:00"),
+        "the timestamp guard must not be reset by rotation"
+    );
+}
+
+#[test]
+fn test_timestamp_ordered_after_rules() {
+    use crate::verification::timestamp_ordered_after;
+
+    // No previous entry: any UTC timestamp is fine.
+    assert!(timestamp_ordered_after("2026-01-01T00:00:00Z", None));
+
+    // Non-UTC is rejected outright — ISO 8601 is only lexicographically
+    // orderable in UTC.
+    assert!(!timestamp_ordered_after("2026-01-01T00:00:00+05:30", None));
+
+    // Mixed UTC suffixes must compare correctly despite '+' < 'Z' in ASCII
+    // (R228-AUD-1).
+    assert!(timestamp_ordered_after(
+        "2026-01-01T00:00:01Z",
+        Some("2026-01-01T00:00:00+00:00")
+    ));
+    assert!(timestamp_ordered_after(
+        "2026-01-01T00:00:01+00:00",
+        Some("2026-01-01T00:00:00Z")
+    ));
+
+    // Equal is allowed; earlier is not.
+    assert!(timestamp_ordered_after(
+        "2026-01-01T00:00:00Z",
+        Some("2026-01-01T00:00:00Z")
+    ));
+    assert!(!timestamp_ordered_after(
+        "2026-01-01T00:00:00Z",
+        Some("2026-01-01T00:00:01Z")
+    ));
+}

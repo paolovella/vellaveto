@@ -2895,7 +2895,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -2905,7 +2908,10 @@ impl ProxyBridge {
                                    "trust_deficit": trust_deficit}),
                                 cf_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -4620,7 +4626,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -4632,7 +4641,10 @@ impl ProxyBridge {
                                 }),
                                 sa_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -4667,15 +4679,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                     .audit
                     .log_entry_with_acis(
                         &action,
                         &pm_verdict,
                         json!({"source": "proxy", "event": "request_principal_mismatch_sampling"}),
                         pm_envelope,
-                    )
-                    .await;
+                    ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)
@@ -4708,15 +4724,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &dv_verdict,
                             json!({"source": "proxy", "event": "deputy_validation_failed_sampling"}),
                             dv_envelope,
-                        )
-                        .await;
+                        ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)
@@ -5289,7 +5309,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -5301,7 +5324,10 @@ impl ProxyBridge {
                                 }),
                                 sa_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -5337,15 +5363,19 @@ impl ProxyBridge {
                     "stdio",
                     state.agent_id.as_deref(),
                 );
-                let _ = self
+                // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                // audit write here was invisible. The denial below is unchanged —
+                // this only makes the lost record observable.
+                if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &pm_verdict,
                             json!({"source": "proxy", "event": "request_principal_mismatch_elicitation"}),
                             pm_envelope,
-                        )
-                        .await;
+                        ).await {
+                    tracing::warn!("Failed to audit denial: {}", e);
+                }
                 let response =
                     make_denial_response(&id, "Request blocked: security policy violation");
                 write_message(agent_writer, &response)
@@ -5381,15 +5411,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &dv_verdict,
                             json!({"source": "proxy", "event": "deputy_validation_failed_elicitation"}),
                             dv_envelope,
-                        )
-                        .await;
+                        ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)

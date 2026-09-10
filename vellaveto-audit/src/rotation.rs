@@ -37,11 +37,12 @@ impl AuditLogger {
         // Verify the chain before trusting any hash from the file.
         // A tampered file must not poison the in-memory chain head.
         let verification = self.verify_chain().await?;
-        let mut last_hash = self.last_hash.lock().await;
+        let mut chain_head = self.chain_head.lock().await;
 
         if verification.valid {
             if let Some(last_entry) = entries.last() {
-                *last_hash = last_entry.entry_hash.clone();
+                chain_head.last_hash = last_entry.entry_hash.clone();
+                chain_head.last_timestamp = Some(last_entry.timestamp.clone());
             }
         } else {
             tracing::warn!(
