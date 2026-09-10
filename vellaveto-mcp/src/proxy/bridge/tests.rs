@@ -2288,3 +2288,62 @@ fn test_evaluate_tool_call_with_security_context_blocks_tainted_privileged_sink(
         Some(SinkClass::CodeExecution)
     );
 }
+
+// ── Strict audit mode on the relay (R271-MCP-1) ─────────────────────────────
+//
+// `audit.strict_mode` denies a request whose audit entry could not be written.
+// These cover the helper the 87 converted call sites funnel through.
+//
+// SCOPE, stated plainly: these do NOT prove the call sites invoke it. Driving a
+// handler needs `IoWriters.agent`, which is a concrete `&mut tokio::io::Stdout`
+// (relay.rs:170), so no test can inject a fake writer — which is also why the
+// relay has no handler-level tests today. Reverting any one call site would
+// leave these green. Closing that needs `IoWriters` generic over `AsyncWrite`,
+// a separate refactor.
+
+#[tokio::test]
+async fn deny_on_audit_failure_denies_in_strict_mode() {
+    let bridge = test_bridge(Vec::new()).with_audit_strict_mode(true);
+    let mut out: Vec<u8> = Vec::new();
+    let err = std::io::Error::other("sink down");
+
+    let denied = bridge
+        .deny_on_audit_failure(&json!(7), &mut out, "tool call", &err)
+        .await
+        .expect("writing the denial must succeed");
+
+    assert!(
+        denied,
+        "strict mode must deny a decision it could not record"
+    );
+
+    let written: serde_json::Value =
+        serde_json::from_slice(out.strip_suffix(b"\n").unwrap_or(&out)).unwrap();
+    assert_eq!(written["id"], json!(7), "denial must answer the request id");
+    assert!(
+        written["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Audit logging failed"),
+        "the agent must be told why, got: {}",
+        written["error"]["message"]
+    );
+}
+
+#[tokio::test]
+async fn deny_on_audit_failure_continues_when_not_strict() {
+    let bridge = test_bridge(Vec::new());
+    let mut out: Vec<u8> = Vec::new();
+    let err = std::io::Error::other("sink down");
+
+    let denied = bridge
+        .deny_on_audit_failure(&json!(7), &mut out, "tool call", &err)
+        .await
+        .unwrap();
+
+    assert!(!denied, "the documented default is warn-and-continue");
+    assert!(
+        out.is_empty(),
+        "nothing may be written to the agent when not denying"
+    );
+}

@@ -16,6 +16,26 @@ use vellaveto_types::Verdict;
 ///
 /// SECURITY (R228-AUD-1): A mix of 'Z' and '+00:00' suffixes in the same audit
 /// log breaks lexicographic ordering because '+' (0x2B) < 'Z' (0x5A) in ASCII.
+/// True when `ts` is a UTC timestamp that does not precede `prev`.
+///
+/// Shared by the verifier and by the append path in `logger.rs` so both apply
+/// one definition of "correctly ordered". Two implementations of this rule
+/// would drift, and the drift would be silent: the appender would accept what
+/// the verifier later rejects, producing a log that cannot be verified.
+///
+/// ISO 8601 timestamps are lexicographically orderable ONLY in UTC, so a
+/// non-UTC offset is rejected outright (fail-closed). UTC suffixes are
+/// normalized before comparison because '+' (0x2B) sorts before 'Z' (0x5A),
+/// so a log mixing the two forms would compare wrongly (R228-AUD-1).
+pub(crate) fn timestamp_ordered_after(ts: &str, prev: Option<&str>) -> bool {
+    let is_utc = ts.ends_with('Z') || ts.ends_with('z') || ts.ends_with("+00:00");
+    let nondecreasing = match prev {
+        Some(prev_ts) => strip_utc_suffix(ts) >= strip_utc_suffix(prev_ts),
+        None => true,
+    };
+    verified_audit_chain::timestamp_guard(is_utc, nondecreasing)
+}
+
 fn strip_utc_suffix(ts: &str) -> &str {
     if let Some(s) = ts.strip_suffix("+00:00") {
         s

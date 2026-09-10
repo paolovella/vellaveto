@@ -5037,3 +5037,79 @@ fn test_r253_require_approval_reason_does_not_leak_trust_score() {
         "Reason must not contain parentheses (score disclosure)"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Strict audit mode parity on the unknown-tool path (FIND-005 / R269-SRV-1)
+//
+// The unknown-tool branch reached here returns a RequireApproval and creates a
+// pending approval. Its audit write is one of six on the evaluate handler that
+// logged a failure and returned the verdict regardless, while only the
+// handler's final audit write honoured `audit.strict_mode`.
+//
+// None of those six can serve an Allow — that path runs through the final,
+// already-guarded write — so this is a recording gap, not an authorization
+// bypass. It still breaks what the setting promises: "every decision must be
+// recorded". Here an approval is created and handed back with no record of it.
+// ---------------------------------------------------------------------------
+
+/// Redirect the audit log at a directory so every append fails with EISDIR.
+/// Portable across root and non-root, unlike chmod-based approaches.
+fn break_audit_writes(state: &mut AppState, tmp: &TempDir, strict: bool) {
+    let blocked = tmp.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+    state.audit = Arc::new(AuditLogger::new(blocked));
+    state.audit_strict_mode = strict;
+}
+
+async fn evaluate_unknown_tool(state: AppState, action: &Action) -> StatusCode {
+    routes::build_router(state)
+        .oneshot(
+            Request::post("/api/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(action).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn evaluate_unknown_tool_denies_when_audit_fails_in_strict_mode() {
+    let (mut state, tmp) = make_state();
+    state.tool_registry = Some(Arc::new(
+        vellaveto_mcp::tool_registry::ToolRegistry::with_threshold(
+            tmp.path().join("tool-registry.jsonl"),
+            0.8,
+        ),
+    ));
+    let action = file_read_action("/tmp/test");
+    break_audit_writes(&mut state, &tmp, true);
+
+    assert_eq!(
+        evaluate_unknown_tool(state, &action).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "strict audit mode must deny a decision it could not record"
+    );
+}
+
+/// Same branch, strict mode off: the documented default is fail-open, and this
+/// pins that the fix did not quietly change it.
+#[tokio::test]
+async fn evaluate_unknown_tool_proceeds_when_audit_fails_without_strict_mode() {
+    let (mut state, tmp) = make_state();
+    state.tool_registry = Some(Arc::new(
+        vellaveto_mcp::tool_registry::ToolRegistry::with_threshold(
+            tmp.path().join("tool-registry.jsonl"),
+            0.8,
+        ),
+    ));
+    let action = file_read_action("/tmp/test");
+    break_audit_writes(&mut state, &tmp, false);
+
+    assert_eq!(
+        evaluate_unknown_tool(state, &action).await,
+        StatusCode::OK,
+        "strict mode is opt-in; the default must still serve the verdict"
+    );
+}
