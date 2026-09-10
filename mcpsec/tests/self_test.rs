@@ -18,12 +18,14 @@ use mcpsec::scoring;
 use mcpsec::{AttackResult, BenchmarkResult, BenchmarkSummary, PropertyScore};
 
 #[test]
-fn test_attack_registry_has_105_tests() {
+fn test_attack_registry_has_116_tests() {
     let tests = attacks::all_tests();
+    // 105 security attacks (A1-A16) + 11 legitimate-traffic checks (A17,
+    // scored on the separate availability axis).
     assert_eq!(
         tests.len(),
-        105,
-        "Expected 105 test cases, got {}",
+        116,
+        "Expected 116 test cases, got {}",
         tests.len()
     );
 }
@@ -58,17 +60,22 @@ fn test_attack_ids_follow_format() {
 }
 
 #[test]
-fn test_all_16_attack_classes_present() {
+fn test_all_17_attack_classes_present() {
     let tests = attacks::all_tests();
     let mut classes: Vec<&str> = tests.iter().map(|t| t.class).collect();
     classes.sort();
     classes.dedup();
+    // 16 security classes plus "Legitimate Traffic" (A17).
     assert_eq!(
         classes.len(),
-        16,
-        "Expected 16 attack classes, got {}: {:?}",
+        17,
+        "Expected 17 classes, got {}: {:?}",
         classes.len(),
         classes
+    );
+    assert!(
+        classes.contains(&"Legitimate Traffic"),
+        "the availability class must be registered, got: {classes:?}"
     );
 }
 
@@ -149,6 +156,7 @@ fn test_json_report_roundtrip() {
         gateway: "test-gateway".to_string(),
         gateway_version: "1.0.0".to_string(),
         overall_score: 97.0,
+        availability_score: 100.0,
         tier: 5,
         tier_name: "Hardened".to_string(),
         properties: vec![PropertyScore {
@@ -190,6 +198,7 @@ fn test_markdown_report_generation() {
         gateway: "test-gateway".to_string(),
         gateway_version: "1.0.0".to_string(),
         overall_score: 50.0,
+        availability_score: 100.0,
         tier: 2,
         tier_name: "Moderate".to_string(),
         properties: vec![],
@@ -329,6 +338,7 @@ fn test_compare_detects_regressions() {
         gateway: "test".to_string(),
         gateway_version: String::new(),
         overall_score: 100.0,
+        availability_score: 100.0,
         tier: 5,
         tier_name: "Hardened".to_string(),
         properties: vec![],
@@ -378,6 +388,7 @@ fn test_compare_detects_regressions() {
             },
         ],
         overall_score: 50.0,
+        availability_score: 100.0,
         tier: 2,
         tier_name: "Moderate".to_string(),
         summary: BenchmarkSummary {

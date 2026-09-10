@@ -113,7 +113,8 @@ jobs:
             scripts/check-claim-anchors.sh \
             scripts/generate-evidence-manifest.sh \
             scripts/report-formal-tooling.sh \
-            scripts/run-dependency-monitor.sh
+            scripts/run-dependency-monitor.sh \
+            scripts/clippy.sh
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -143,8 +144,11 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets --locked
 
+      # Default features only — this is the fast per-push gate. Non-default
+      # features are linted by the feature-matrix job, which is where the
+      # heavier dependency trees belong.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings -D unsafe-code -A clippy::uninlined_format_args -A clippy::field_reassign_with_default -A clippy::const_is_empty -A clippy::unnecessary_literal_unwrap -A clippy::assertions_on_constants
+        run: bash scripts/clippy.sh --workspace --all-targets --locked
 
       - name: Reject unwrap()/expect() in library code
         run: |
@@ -319,31 +323,8 @@ jobs:
       - name: Build docs (verify no broken links)
         run: cargo doc --workspace --no-deps --locked
 
-  # ───────────────────────────────────────────────────────
-  # 4. Feature-gated critical paths
-  # ───────────────────────────────────────────────────────
-  feature-gates:
-    name: Feature Gates
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs: check
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
-        with:
-          cache-on-failure: true
-
-      - name: MCP A2A feature path
-        run: cargo test -p vellaveto-mcp --features a2a --locked
-
-      - name: Server Redis backend feature path
-        run: cargo test -p vellaveto-server --features redis-backend --locked
+  # The former "Feature Gates" job (a2a, redis-backend) has been folded into
+  # the feature-matrix job below, so every feature is listed in one place.
 
   # ───────────────────────────────────────────────────────
   # 5. Security audit
@@ -353,7 +334,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -362,11 +342,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
         with:
           toolchain: stable
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-        env:
-          RUSTUP_TOOLCHAIN: stable
+      # Pinned and --locked, matching cargo-deny / cargo-vet /
+      # cargo-semver-checks / cargo-fuzz elsewhere in this file.
+      #
+      # This replaced rustsec/audit-check, which ran an unpinned, unlocked
+      # `cargo install cargo-audit`. That re-resolved cargo-audit's own
+      # dependencies to whatever was newest, so when tinyvec 1.13.0 shipped
+      # broken ("cannot find macro `vec` in this scope") the install failed and
+      # this job stopped auditing anything — with no change to this repository.
+      # `--locked` builds cargo-audit against its own published lockfile, so a
+      # third-party release can no longer break this check.
+      #
+      # Trade-off: the action posted advisories as check annotations; a bare
+      # `cargo audit` fails the job with the advisory text in the log instead.
+      # Plainer, but a check that cannot build is worth less than a plain one.
+      # No GITHUB_TOKEN or `checks: write` needed as a result.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      - name: Check for security advisories
+        run: cargo audit
 
   # ───────────────────────────────────────────────────────
   # 6. Fuzz target compilation check
@@ -399,9 +393,15 @@ jobs:
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.1 --locked
 
+      # --locked against the committed fuzz/Cargo.lock. `fuzz` is excluded from
+      # the workspace (root Cargo.toml), so it does not share the root lockfile
+      # and, without one of its own, re-resolved every dependency on every run.
+      # That is how tinyvec 1.13.0 — published broken — reached this job and
+      # failed it with no change to this repository. Same lesson as the pinned
+      # toolchain above, one layer down: pin the tool AND the code's deps.
       - name: Check fuzz targets compile
         working-directory: fuzz
-        run: cargo +nightly-2026-06-01 check --all-targets
+        run: cargo +nightly-2026-06-01 check --all-targets --locked
 
   # ───────────────────────────────────────────────────────
   # 7. Benchmark regression gate (push to main only)
@@ -637,7 +637,14 @@ jobs:
   coq-verification:
     name: Coq Formal Proofs
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 30, matching the `coq` job in formal-verification.yml, which installs the
+    # same package and builds the same proofs. `apt-get install coq` pulls
+    # 288 MB of archives (~1 GB installed), and when the Ubuntu mirror is slow
+    # that alone can consume a whole 10-minute budget: on #370 the install ran
+    # 07:09:26 -> 07:19:26 and the job was cancelled on timeout before a single
+    # proof was built, while the 30-minute job on the same commit passed. The
+    # proofs take seconds; the download does not.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -705,8 +712,30 @@ jobs:
             cargo_args: "-p vellaveto-server --no-default-features --features projector --locked"
           - name: zk-audit
             cargo_args: "-p vellaveto-audit --features zk-audit --locked"
-          - name: all features
-            cargo_args: "-p vellaveto-server --features discovery,projector -p vellaveto-audit --features zk-audit --locked"
+          # grpc gates ~10,900 lines of transport code in vellaveto-http-proxy
+          # (proxy/mod.rs) that no other job compiles, tests included.
+          - name: grpc
+            cargo_args: "-p vellaveto-http-proxy --features grpc --locked"
+          # The server feature pulls in vellaveto-audit/postgres-store too.
+          - name: postgres-store
+            cargo_args: "-p vellaveto-server --features postgres-store --locked"
+          # Folded in from the former "Feature Gates" job.
+          - name: a2a
+            cargo_args: "-p vellaveto-mcp --features a2a --locked"
+          - name: redis-backend
+            cargo_args: "-p vellaveto-server --features redis-backend --locked"
+          # Per-crate --all-features, so a lint or a break is attributed to one
+          # crate rather than surfacing only in the workspace-wide entry.
+          - name: audit all features
+            cargo_args: "-p vellaveto-audit --all-features --locked"
+          - name: mcp all features
+            cargo_args: "-p vellaveto-mcp --all-features --locked"
+          - name: server all features
+            cargo_args: "-p vellaveto-server --all-features --locked"
+          # The catch-all: a feature added later is covered here on day one,
+          # even if nobody remembers to add a row above.
+          - name: workspace all features
+            cargo_args: "--workspace --all-features --locked"
     steps:
       - name: Free disk space
         run: |
@@ -722,6 +751,23 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
         with:
           cache-on-failure: true
+
+      # Required by the `grpc` entries: vellaveto-http-proxy's build.rs compiles
+      # proto/mcp/v1/mcp.proto via prost, which shells out to protoc. Installed
+      # unconditionally rather than per-entry because `workspace all features`
+      # enables grpc too, and a matrix entry added later would silently need it.
+      # Nothing needed protoc before, since no job ever compiled grpc — which is
+      # the gap this job exists to close.
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+
+      # Clippy runs before the tests: this job used to run `cargo test` only,
+      # so lints behind a non-default feature were never checked anywhere —
+      # zk-audit was in this matrix and still accumulated a finding.
+      - name: "Clippy: ${{ matrix.name }}"
+        run: bash scripts/clippy.sh ${{ matrix.cargo_args }} --all-targets
 
       - name: "Test: ${{ matrix.name }}"
         run: cargo test ${{ matrix.cargo_args }}

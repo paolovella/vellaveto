@@ -2347,3 +2347,97 @@ async fn deny_on_audit_failure_continues_when_not_strict() {
         "nothing may be written to the agent when not denying"
     );
 }
+
+// ── Handler-level strict audit mode (R271-MCP-1) ────────────────────────────
+//
+// These are the tests the earlier strict-mode branch could not write. Driving a
+// handler needed `IoWriters.agent`, which was a concrete `&mut Stdout`; with the
+// writers generic, a handler can be run against in-memory buffers.
+//
+// The distinction that matters: the helper-level tests above stay green if a
+// call site is reverted. These do not — they exercise handle_tool_call itself.
+
+/// Build a bridge whose audit writes always fail, by pointing the log at a
+/// directory (EISDIR). Portable for root and non-root, unlike chmod.
+fn bridge_with_failing_audit(strict: bool) -> (ProxyBridge, tempfile::TempDir) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let blocked = tmp.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+    let policies: Vec<vellaveto_types::Policy> = vec![vellaveto_types::Policy {
+        id: "*".to_string(),
+        name: "Allow all".to_string(),
+        policy_type: PolicyType::Allow,
+        priority: 100,
+        path_rules: None,
+        network_rules: None,
+    }];
+    let engine = vellaveto_engine::PolicyEngine::with_policies(false, &policies).unwrap();
+    let audit = Arc::new(vellaveto_audit::AuditLogger::new(blocked));
+    let bridge = ProxyBridge::new(engine, policies, audit).with_audit_strict_mode(strict);
+    (bridge, tmp)
+}
+
+/// Run one `tools/call` through the handler, returning (to-agent, to-child).
+async fn run_tool_call(bridge: &ProxyBridge, tool: &str) -> (Vec<u8>, Vec<u8>) {
+    let mut to_agent: Vec<u8> = Vec::new();
+    let mut to_child: Vec<u8> = Vec::new();
+    let mut state = super::relay::RelayState::new(std::collections::HashSet::new());
+    let msg = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": tool, "arguments": {"path": "/tmp/x"}}
+    });
+    {
+        let mut io = super::relay::IoWriters {
+            agent: &mut to_agent,
+            child: &mut to_child,
+        };
+        bridge
+            .handle_tool_call(
+                msg,
+                json!(1),
+                tool.to_string(),
+                json!({"path": "/tmp/x"}),
+                &mut state,
+                &mut io,
+            )
+            .await
+            .expect("handler must not error");
+    }
+    (to_agent, to_child)
+}
+
+#[tokio::test]
+async fn tool_call_denied_when_audit_fails_in_strict_mode() {
+    let (bridge, _tmp) = bridge_with_failing_audit(true);
+    let (to_agent, to_child) = run_tool_call(&bridge, "read_file").await;
+
+    let sent: serde_json::Value =
+        serde_json::from_slice(to_agent.strip_suffix(b"\n").unwrap_or(&to_agent))
+            .expect("a JSON-RPC denial must be written to the agent");
+    assert!(
+        sent["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Audit logging failed"),
+        "expected an audit-failure denial, got: {sent}"
+    );
+    assert!(
+        to_child.is_empty(),
+        "a call whose decision was not recorded must not reach the child server"
+    );
+}
+
+#[tokio::test]
+async fn tool_call_forwarded_when_audit_fails_without_strict_mode() {
+    let (bridge, _tmp) = bridge_with_failing_audit(false);
+    let (to_agent, to_child) = run_tool_call(&bridge, "read_file").await;
+
+    assert!(
+        !to_child.is_empty(),
+        "the documented default is warn-and-continue: the call still forwards"
+    );
+    assert!(
+        to_agent.is_empty(),
+        "nothing should be sent to the agent when not denying"
+    );
+}

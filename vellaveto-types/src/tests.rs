@@ -4187,15 +4187,93 @@ fn test_secure_task_record_nonce_respects_cap() {
     let mut task = SecureTask::new(tracked);
     // Manually set a large max_nonces to verify runtime cap
     task.max_nonces = 50_000;
-    // Fill to MAX_NONCES_CAP
+    // Fill past MAX_NONCES_CAP. try_record_nonce refuses once full rather than
+    // evicting, so the cap is enforced without discarding recorded nonces.
+    let mut accepted = 0usize;
     for i in 0..10_001 {
-        task.record_nonce(format!("nonce-{i}"));
+        if task.try_record_nonce(format!("nonce-{i}")) {
+            accepted += 1;
+        }
     }
-    // Should be capped at MAX_NONCES_CAP (10,000) due to FIFO eviction
+    assert_eq!(
+        accepted, 10_000,
+        "exactly MAX_NONCES_CAP nonces should be accepted"
+    );
     assert!(
         task.seen_nonces.len() <= 10_000,
         "seen_nonces should not exceed 10,000, got {}",
         task.seen_nonces.len()
+    );
+}
+
+/// SECURITY (DOC-CRED-6): The property the fail-closed change exists for.
+/// Under FIFO eviction the first nonce was dropped once the cache filled, and
+/// `is_nonce_seen` then reported a captured request carrying it as fresh —
+/// i.e. replayable. Refusing to record keeps every recorded nonce detectable.
+#[test]
+fn test_secure_task_full_cache_never_forgets_a_recorded_nonce() {
+    let tracked = TrackedTask {
+        task_id: "t1".to_string(),
+        tool: "test".to_string(),
+        function: "fn".to_string(),
+        status: TaskStatus::Pending,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        expires_at: None,
+        created_by: None,
+        session_id: None,
+    };
+    let mut task = SecureTask::new(tracked);
+    task.max_nonces = 4;
+
+    for i in 0..4 {
+        assert!(task.try_record_nonce(format!("nonce-{i}")));
+    }
+
+    // Cache is full: further nonces are refused, not absorbed by eviction.
+    assert!(
+        !task.try_record_nonce("nonce-overflow".to_string()),
+        "a full cache must refuse rather than evict"
+    );
+    assert!(
+        !task.is_nonce_seen("nonce-overflow"),
+        "a refused nonce must not be recorded"
+    );
+
+    // The oldest nonce is still remembered, so replaying it is still detected.
+    assert!(
+        task.is_nonce_seen("nonce-0"),
+        "the earliest nonce must remain detectable — forgetting it is what made \
+         it replayable under FIFO eviction"
+    );
+    assert_eq!(task.seen_nonces.len(), 4, "cache must stay at its bound");
+}
+
+/// Over-long nonces are still truncated to MAX_ENTRY_LEN on the fail-closed
+/// path, and truncation must not panic on a multi-byte boundary.
+#[test]
+fn test_try_record_nonce_truncates_and_respects_char_boundaries() {
+    let tracked = TrackedTask {
+        task_id: "t1".to_string(),
+        tool: "test".to_string(),
+        function: "fn".to_string(),
+        status: TaskStatus::Pending,
+        created_at: "2026-01-01T00:00:00Z".to_string(),
+        expires_at: None,
+        created_by: None,
+        session_id: None,
+    };
+    let mut task = SecureTask::new(tracked);
+
+    // 'é' is two bytes, so the 256-byte limit lands mid-character.
+    let multibyte = "é".repeat(200);
+    assert!(task.try_record_nonce(multibyte));
+    assert!(
+        task.seen_nonces[0].len() <= MAX_ENTRY_LEN,
+        "nonce must be truncated to MAX_ENTRY_LEN"
+    );
+    assert!(
+        task.seen_nonces[0].chars().all(|c| c == 'é'),
+        "truncation must land on a char boundary, not split a code point"
     );
 }
 
