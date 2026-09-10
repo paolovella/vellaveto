@@ -4647,6 +4647,70 @@ fn test_logger_with_sink_fatal_flag() {
     );
 }
 
+/// A sink whose writes always fail. `NoOpSink` returns Ok unconditionally, so
+/// until this existed the crate had no way to exercise `sink_failure_fatal` —
+/// the tests above set the flag and assert only that the boolean is stored.
+#[derive(Debug)]
+struct AlwaysFailingSink;
+
+#[async_trait::async_trait]
+impl crate::sink::AuditSink for AlwaysFailingSink {
+    async fn sink(&self, _entry: &crate::AuditEntry) -> Result<(), crate::sink::SinkError> {
+        Err(crate::sink::SinkError::Write(
+            "injected failure".to_string(),
+        ))
+    }
+
+    async fn flush(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    fn is_healthy(&self) -> bool {
+        false
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_true_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), true);
+
+    assert!(
+        logger
+            .log_entry(&test_action(), &Verdict::Allow, json!({}))
+            .await
+            .is_err(),
+        "fatal mode must surface a sink write failure to the caller"
+    );
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_false_persists_to_file() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), false);
+
+    logger
+        .log_entry(&test_action(), &Verdict::Allow, json!({}))
+        .await
+        .expect("non-fatal mode must not fail the write");
+
+    assert_eq!(
+        logger.load_entries().await.unwrap().len(),
+        1,
+        "the file log is the source of truth and must still hold the entry"
+    );
+}
+
 // ── FileAuditQuery tests ─────────────────────────────────────────────────────
 
 #[tokio::test]
