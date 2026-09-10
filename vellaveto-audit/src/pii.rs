@@ -146,8 +146,40 @@ struct NamedPiiRegex {
     luhn_postfilter: bool,
 }
 
-/// Default built-in PII detection patterns.
+/// Categories excluded from audit redaction but kept for outbound sanitization.
+///
+/// A file path is PII when it leaves the machine — `/Users/jane/medical/...`
+/// names a person and their business — so the Consumer Shield must replace it
+/// before a provider sees it. It is the opposite in an audit log: the path *is*
+/// the record. An entry reading `file.read "[REDACTED]"` documents that
+/// something happened to something, which is not an audit trail. The repo
+/// asserts this directly — `owasp_mcp_top10.rs` fails with "Parameters must be
+/// logged" — and OWASP MCP09 depends on it.
+///
+/// So the pattern set is not one set. `default_patterns()` is what audit
+/// redacts; `sanitizer_patterns()` adds these on top for the Shield.
+const SANITIZER_ONLY_CATEGORIES: &[&str] = &["path"];
+
+/// Built-in PII patterns used for **audit redaction**.
+///
+/// Excludes [`SANITIZER_ONLY_CATEGORIES`]; see there for why.
 fn default_patterns() -> Vec<NamedPiiRegex> {
+    all_patterns()
+        .into_iter()
+        .filter(|p| !SANITIZER_ONLY_CATEGORIES.contains(&p.name))
+        .collect()
+}
+
+/// Built-in PII patterns used for **outbound sanitization** by the Shield.
+///
+/// The full set, including the categories audit deliberately preserves.
+fn sanitizer_patterns() -> Vec<NamedPiiRegex> {
+    all_patterns()
+}
+
+/// Every built-in pattern. Callers choose a profile above rather than using
+/// this directly, so the audit/sanitizer distinction cannot be lost by accident.
+fn all_patterns() -> Vec<NamedPiiRegex> {
     let patterns: &[(&str, &str, bool)] = &[
         (
             "email",
@@ -270,6 +302,20 @@ impl PiiScanner {
     /// Invalid custom patterns and patterns that fail ReDoS safety validation
     /// are logged via `tracing::warn!` and skipped.
     pub fn new(custom: &[CustomPiiPattern]) -> Self {
+        Self::with_profile(custom, default_patterns())
+    }
+
+    /// Create a scanner for **outbound sanitization** (the Consumer Shield).
+    ///
+    /// Same as [`PiiScanner::new`] plus the categories audit deliberately
+    /// preserves — file paths above all. Use this when the text is leaving the
+    /// machine; use `new` when the text is being written to an audit log. See
+    /// [`SANITIZER_ONLY_CATEGORIES`].
+    pub fn new_for_sanitizer(custom: &[CustomPiiPattern]) -> Self {
+        Self::with_profile(custom, sanitizer_patterns())
+    }
+
+    fn with_profile(custom: &[CustomPiiPattern], default_patterns: Vec<NamedPiiRegex>) -> Self {
         let mut custom_patterns = Vec::new();
         for pat in custom {
             // R2-3: Validate for ReDoS before compiling
@@ -291,7 +337,7 @@ impl PiiScanner {
             }
         }
         Self {
-            default_patterns: default_patterns(),
+            default_patterns,
             custom_patterns,
         }
     }
@@ -763,7 +809,7 @@ mod tests {
         // The exact string the README opens the Consumer Shield section with.
         // Before a path pattern existed, this path was sent to the provider
         // verbatim — the outcome that section promises to prevent.
-        let scanner = PiiScanner::new(&[]);
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
         let matches =
             scanner.find_matches("Read my medical records at /home/alice/health/lab-results.pdf");
         assert_eq!(
@@ -777,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_path_variants_are_detected() {
-        let scanner = PiiScanner::new(&[]);
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
         for input in [
             "/home/alice/health/lab-results.pdf",
             "~/Documents/taxes/2025.pdf",
@@ -872,7 +918,7 @@ mod tests {
     fn test_path_containing_an_ip_yields_one_match() {
         // A path can contain an IP. The longer, more specific span wins, and
         // the result must still be non-overlapping.
-        let scanner = PiiScanner::new(&[]);
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
         let matches = scanner.find_matches("/var/backups/192.168.1.10/db.sql");
         assert_eq!(matches.len(), 1, "expected one span, got {matches:?}");
         assert_eq!(matches[0].category, "path");
@@ -900,5 +946,63 @@ mod tests {
                 .collect();
             assert_eq!(again, first);
         }
+    }
+
+    // ── Audit vs sanitizer pattern profiles ─────────────────────────────
+    //
+    // These pin the distinction itself. Collapsing the two profiles back into
+    // one set is an easy, quiet mistake, and it breaks whichever side loses:
+    // audit stops recording what was accessed, or the Shield starts leaking
+    // paths to providers.
+
+    const AUDIT_MUST_PRESERVE: &str = "/etc/hosts";
+
+    #[test]
+    fn test_audit_profile_preserves_file_paths() {
+        // An audit entry reading `file.read "[REDACTED]"` is not an audit
+        // trail. owasp_mcp_top10.rs asserts this as "Parameters must be
+        // logged", and OWASP MCP09 depends on it.
+        let scanner = PiiScanner::new(&[]);
+        assert_eq!(
+            scanner.redact_string(AUDIT_MUST_PRESERVE),
+            AUDIT_MUST_PRESERVE,
+            "audit redaction must not touch file paths — the path is the record"
+        );
+        assert!(
+            !categories_at(&scanner, AUDIT_MUST_PRESERVE).contains(&"path".to_string()),
+            "audit profile must not carry the `path` pattern"
+        );
+    }
+
+    #[test]
+    fn test_sanitizer_profile_redacts_file_paths() {
+        // The same path leaving the machine is PII: it names a person and
+        // their business to whoever receives it.
+        let scanner = PiiScanner::new_for_sanitizer(&[]);
+        assert!(
+            categories_at(&scanner, AUDIT_MUST_PRESERVE).contains(&"path".to_string()),
+            "sanitizer profile must detect file paths"
+        );
+    }
+
+    #[test]
+    fn test_profiles_differ_only_by_sanitizer_only_categories() {
+        // Guards against the profiles drifting apart for any other reason: a
+        // pattern added to one and forgotten in the other would show up here.
+        let audit: Vec<&str> = default_patterns().iter().map(|p| p.name).collect();
+        let sanitizer: Vec<&str> = sanitizer_patterns().iter().map(|p| p.name).collect();
+        let only_in_sanitizer: Vec<&str> = sanitizer
+            .iter()
+            .filter(|n| !audit.contains(n))
+            .copied()
+            .collect();
+        assert_eq!(
+            only_in_sanitizer, SANITIZER_ONLY_CATEGORIES,
+            "the profiles must differ by exactly SANITIZER_ONLY_CATEGORIES"
+        );
+        assert!(
+            audit.iter().all(|n| sanitizer.contains(n)),
+            "every audit pattern must also be in the sanitizer profile"
+        );
     }
 }

@@ -16,7 +16,7 @@ const README_PATH: &str = "/home/alice/health/lab-results.pdf";
 
 #[test]
 fn readme_example_sanitizes_and_round_trips() {
-    let sanitizer = QuerySanitizer::new(PiiScanner::new(&[]));
+    let sanitizer = QuerySanitizer::new(PiiScanner::new_for_sanitizer(&[]));
 
     let sanitized = sanitizer.sanitize(README_INPUT).expect("sanitize");
     assert!(
@@ -42,7 +42,7 @@ fn overlapping_patterns_do_not_panic() {
     // span. The sanitizer walks spans slicing input[last_end..m.start], so
     // before overlap resolution this panicked outright — reachable by any
     // operator adding a custom pattern, which the shipped preset documents.
-    let sanitizer = QuerySanitizer::new(PiiScanner::new(&[CustomPiiPattern {
+    let sanitizer = QuerySanitizer::new(PiiScanner::new_for_sanitizer(&[CustomPiiPattern {
         name: "dup".to_string(),
         pattern: r"alice@example\.com".to_string(),
     }]));
@@ -61,7 +61,7 @@ fn overlapping_patterns_do_not_panic() {
 fn a_path_containing_an_ip_round_trips_whole() {
     // Path and ipv4 both match here. The longer span wins, and the value must
     // still restore exactly.
-    let sanitizer = QuerySanitizer::new(PiiScanner::new(&[]));
+    let sanitizer = QuerySanitizer::new(PiiScanner::new_for_sanitizer(&[]));
     let input = "back up /var/backups/192.168.1.10/db.sql tonight";
 
     let sanitized = sanitizer.sanitize(input).expect("sanitize");
@@ -73,7 +73,7 @@ fn a_path_containing_an_ip_round_trips_whole() {
 fn ordinary_prose_is_left_alone() {
     // A sanitizer that mangles ordinary text gets switched off, which is a
     // security failure rather than a cosmetic one.
-    let sanitizer = QuerySanitizer::new(PiiScanner::new(&[]));
+    let sanitizer = QuerySanitizer::new(PiiScanner::new_for_sanitizer(&[]));
     for input in [
         "use and/or as needed",
         "the ratio was 3/4 overall",
