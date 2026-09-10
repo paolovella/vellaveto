@@ -1216,6 +1216,52 @@ impl RelayState {
 }
 
 impl ProxyBridge {
+    /// Handle a failed audit write on a security-decision path.
+    ///
+    /// SECURITY (R271-MCP-1): `audit.strict_mode` is documented as "audit
+    /// logging failures cause requests to be denied instead of proceeding
+    /// without an audit trail … every decision must be recorded". The HTTP
+    /// transports honour it. The stdio relay did not implement it at all: every
+    /// audit failure here was logged and stepped over, so the same operator
+    /// setting meant different things depending on how an agent connected —
+    /// the transport-parity gap CLAUDE.md lists as mistake #13, sitting on top
+    /// of a fail-open (#12).
+    ///
+    /// Every audit write in this file records a verdict, so all of them are
+    /// decisions covered by that sentence. Routing them through one function
+    /// is what keeps them in step; the alternative is a hundred copies to keep
+    /// synchronised.
+    ///
+    /// Returns `Ok(true)` when the request was denied and the JSON-RPC error
+    /// has already been written — the caller must stop. `Ok(false)` preserves
+    /// the previous behaviour (warn and continue), which stays the default.
+    pub(super) async fn deny_on_audit_failure<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        id: &Value,
+        agent_writer: &mut W,
+        context: &str,
+        error: &dyn std::fmt::Display,
+    ) -> Result<bool, ProxyError> {
+        if !self.audit_strict_mode {
+            tracing::warn!("Failed to audit {}: {}", context, error);
+            return Ok(false);
+        }
+
+        tracing::error!(
+            "AUDIT FAILURE: {} not recorded — denying (strict audit mode): {}",
+            context,
+            error
+        );
+        let response = make_denial_response(
+            id,
+            "Audit logging failed — request denied (strict audit mode)",
+        );
+        write_message(agent_writer, &response)
+            .await
+            .map_err(ProxyError::Framing)?;
+        Ok(true)
+    }
+
     /// Run the bidirectional proxy loop.
     ///
     /// Reads messages from `agent_reader` (the agent's stdout, our stdin),
@@ -1664,7 +1710,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit invalid tool name: {}", audit_err);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "invalid tool name", &audit_err)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -1700,7 +1751,12 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit rug-pull block: {}", e);
+                if self
+                    .deny_on_audit_failure(&id, agent_writer, "rug-pull block", &e)
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             let response = make_denial_response(&id, &reason);
             write_message(agent_writer, &response)
@@ -1750,7 +1806,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "circuit breaker block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -1801,7 +1862,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit shadow agent: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "shadow agent", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -1850,7 +1916,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit principal mismatch: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "principal mismatch", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response = make_denial_response(&id, &reason);
                     write_message(agent_writer, &response)
@@ -1905,7 +1976,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit deputy validation: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "deputy validation", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -2010,7 +2086,12 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit DLP finding: {}", e);
+                if self
+                    .deny_on_audit_failure(&id, agent_writer, "DLP finding", &e)
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             // SECURITY (R28-MCP-5): Generic error to agent — do not
             // leak which DLP patterns matched or their locations.
@@ -2064,7 +2145,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit DoW finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "DoW finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -2103,7 +2189,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit jailbreak finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "jailbreak finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -2142,7 +2233,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit token leakage finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "token leakage finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -2181,7 +2277,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit memory query poisoning finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "memory query poisoning finding",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -2245,7 +2351,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit tool call injection finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "tool call injection finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 if self.injection_blocking {
                     let response = json!({
@@ -2399,7 +2510,17 @@ impl ProxyBridge {
                                     )
                                     .await
                                 {
-                                    tracing::error!("AUDIT FAILURE: {}", e);
+                                    if self
+                                        .deny_on_audit_failure(
+                                            &id,
+                                            agent_writer,
+                                            "AUDIT FAILURE",
+                                            &e,
+                                        )
+                                        .await?
+                                    {
+                                        return Ok(());
+                                    }
                                 }
                                 let response =
                                     make_denial_response(&id, INVALID_PRESENTED_APPROVAL_REASON);
@@ -2436,7 +2557,12 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::error!("AUDIT FAILURE: {}", e);
+                                if self
+                                    .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let response =
                                 make_denial_response(&id, INVALID_PRESENTED_APPROVAL_REASON);
@@ -2473,7 +2599,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         // SECURITY (SE-005): Log approval creation errors instead of silently swallowing.
                         let approval_id = if let Some(ref store) = self.approval_store {
@@ -2557,7 +2688,17 @@ impl ProxyBridge {
                                     )
                                     .await
                                 {
-                                    tracing::error!("AUDIT FAILURE: {}", e);
+                                    if self
+                                        .deny_on_audit_failure(
+                                            &id,
+                                            agent_writer,
+                                            "AUDIT FAILURE",
+                                            &e,
+                                        )
+                                        .await?
+                                    {
+                                        return Ok(());
+                                    }
                                 }
                                 let response =
                                     make_denial_response(&id, INVALID_PRESENTED_APPROVAL_REASON);
@@ -2594,7 +2735,12 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::error!("AUDIT FAILURE: {}", e);
+                                if self
+                                    .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let response =
                                 make_denial_response(&id, INVALID_PRESENTED_APPROVAL_REASON);
@@ -2636,7 +2782,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "AUDIT FAILURE", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         // SECURITY (SE-005): Log approval creation errors instead of silently swallowing.
                         let approval_id = if let Some(ref store) = self.approval_store {
@@ -2744,7 +2895,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -2754,7 +2908,10 @@ impl ProxyBridge {
                                    "trust_deficit": trust_deficit}),
                                 cf_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -2888,7 +3045,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit tool quota exceeded: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "tool quota exceeded", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response =
                     make_denial_response(&id, "Request blocked: security policy violation");
@@ -3093,7 +3255,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R239-MCP-2): Genericize deny reason in response
                             // to avoid leaking ABAC policy details to agents. The raw
@@ -3145,7 +3317,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R239-MCP-2): Genericize deny reason in response.
                             let response = make_denial_response(
@@ -3200,7 +3382,12 @@ impl ProxyBridge {
                                 state.agent_id.as_deref(),
                             );
                             if let Err(e) = self.audit.log_entry_with_acis(&deny_action, &sh_pii_verdict, json!({"source": "proxy", "event": "shield_pii_sanitization_blocked"}), sh_pii_envelope).await {
-                                tracing::warn!("Failed to audit shield PII sanitization denial: {}", e);
+                                if self
+                                    .deny_on_audit_failure(&id, agent_writer, "shield PII sanitization denial", &e)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let error_response = make_denial_response(
                                 &id,
@@ -3243,7 +3430,12 @@ impl ProxyBridge {
                                 state.agent_id.as_deref(),
                             );
                             if let Err(e) = self.audit.log_entry_with_acis(&deny_action, &sh_sty_verdict, json!({"source": "proxy", "event": "shield_stylometric_blocked"}), sh_sty_envelope).await {
-                                tracing::warn!("Failed to audit shield stylometric denial: {}", e);
+                                if self
+                                    .deny_on_audit_failure(&id, agent_writer, "shield stylometric denial", &e)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let error_response = make_denial_response(
                                 &id,
@@ -3296,7 +3488,12 @@ impl ProxyBridge {
                                         state.agent_id.as_deref(),
                                     );
                                 if let Err(e) = self.audit.log_entry_with_acis(&deny_action, &sh_cred_verdict, json!({"source": "proxy", "event": "shield_credential_blocked"}), sh_cred_envelope).await {
-                                    tracing::warn!("Failed to audit shield credential denial: {}", e);
+                                    if self
+                                        .deny_on_audit_failure(&id, agent_writer, "shield credential denial", &e)
+                                        .await?
+                                    {
+                                        return Ok(());
+                                    }
                                 }
                                 let error_response = make_denial_response(
                                     &id,
@@ -3331,7 +3528,17 @@ impl ProxyBridge {
                     .log_entry_with_acis(&action, &Verdict::Allow, meta, acis_envelope)
                     .await
                 {
-                    tracing::warn!("Audit log failed for allowed tool call: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "Audit log failed for allowed tool call",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // Record tool call in registry on Allow
                 if let Some(ref registry) = self.tool_registry {
@@ -3552,7 +3759,12 @@ impl ProxyBridge {
                     .log_entry_with_acis(&action, &verdict, meta, acis_envelope)
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // Desktop notification: emit deny/requireApproval event.
                 if let Some(ref notify) = self.verdict_notify {
@@ -3622,7 +3834,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "circuit breaker block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -3672,7 +3889,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit shadow agent: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "shadow agent", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -3718,7 +3940,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit principal mismatch: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "principal mismatch", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response = make_denial_response(&id, &reason);
                     write_message(agent_writer, &response)
@@ -3771,7 +3998,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit deputy validation: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "deputy validation", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -3874,7 +4106,12 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit resource DLP: {}", e);
+                if self
+                    .deny_on_audit_failure(&id, agent_writer, "resource DLP", &e)
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             // SECURITY (R28-MCP-5): Generic error to agent.
             let response = json!({
@@ -4012,7 +4249,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit resource injection finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "resource injection finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 if self.injection_blocking {
                     let response = json!({
@@ -4159,7 +4401,12 @@ impl ProxyBridge {
                                     state.agent_id.as_deref(),
                                 );
                             if let Err(e) = self.audit.log_entry_with_acis(&deny_action, &sh_pii_rr_verdict, json!({"source": "proxy", "event": "shield_pii_sanitization_blocked"}), sh_pii_rr_envelope).await {
-                                tracing::warn!("Failed to audit shield PII sanitization denial (resources/read): {}", e);
+                                if self
+                                    .deny_on_audit_failure(&id, agent_writer, "shield PII sanitization denial (resources/read)", &e)
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let error_response = make_denial_response(
                                 &id,
@@ -4193,7 +4440,17 @@ impl ProxyBridge {
                     .log_entry_with_acis(&action, &Verdict::Allow, audit_meta, acis_envelope)
                     .await
                 {
-                    tracing::warn!("Audit log failed for allowed resource read: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "Audit log failed for allowed resource read",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // SECURITY (R38-MCP-2): Update call_counts and action_history for ResourceRead.
                 state.record_forwarded_action("resources/read");
@@ -4254,7 +4511,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // Desktop notification: emit resource read deny event.
                 if let Some(ref notify) = self.verdict_notify {
@@ -4319,7 +4581,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit sampling circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "sampling circuit breaker block",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, "Request blocked by circuit breaker");
                 write_message(agent_writer, &response)
@@ -4354,7 +4626,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -4366,7 +4641,10 @@ impl ProxyBridge {
                                 }),
                                 sa_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -4401,15 +4679,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                     .audit
                     .log_entry_with_acis(
                         &action,
                         &pm_verdict,
                         json!({"source": "proxy", "event": "request_principal_mismatch_sampling"}),
                         pm_envelope,
-                    )
-                    .await;
+                    ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)
@@ -4442,15 +4724,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &dv_verdict,
                             json!({"source": "proxy", "event": "deputy_validation_failed_sampling"}),
                             dv_envelope,
-                        )
-                        .await;
+                        ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)
@@ -4508,7 +4794,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit sampling detector block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "sampling detector block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let deny_response = make_denial_response(&id, "Sampling request denied by policy");
                 write_message(agent_writer, &deny_response)
@@ -4576,7 +4867,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Audit log failed: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     tracing::warn!("Blocked sampling/createMessage: {}", reason);
                     write_message(agent_writer, &response)
@@ -4630,7 +4926,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit sampling memory poisoning: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                &id,
+                                agent_writer,
+                                "sampling memory poisoning",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
@@ -4728,7 +5034,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit sampling DLP finding: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "sampling DLP finding", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
@@ -4851,7 +5162,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed for sampling allow: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "Audit log failed for sampling allow",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, msg)
                     .await
@@ -4886,7 +5207,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 tracing::warn!("Blocked sampling/createMessage: {}", reason);
                 write_message(agent_writer, &response)
@@ -4938,7 +5264,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit elicitation circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "elicitation circuit breaker block",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, "Request blocked by circuit breaker");
                 write_message(agent_writer, &response)
@@ -4973,7 +5309,10 @@ impl ProxyBridge {
                             "stdio",
                             state.agent_id.as_deref(),
                         );
-                        let _ = self
+                        // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                        // audit write here was invisible. The denial below is unchanged —
+                        // this only makes the lost record observable.
+                        if let Err(e) = self
                             .audit
                             .log_entry_with_acis(
                                 &action,
@@ -4985,7 +5324,10 @@ impl ProxyBridge {
                                 }),
                                 sa_envelope,
                             )
-                            .await;
+                            .await
+                        {
+                            tracing::warn!("Failed to audit denial: {}", e);
+                        }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
                         write_message(agent_writer, &response)
@@ -5021,15 +5363,19 @@ impl ProxyBridge {
                     "stdio",
                     state.agent_id.as_deref(),
                 );
-                let _ = self
+                // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                // audit write here was invisible. The denial below is unchanged —
+                // this only makes the lost record observable.
+                if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &pm_verdict,
                             json!({"source": "proxy", "event": "request_principal_mismatch_elicitation"}),
                             pm_envelope,
-                        )
-                        .await;
+                        ).await {
+                    tracing::warn!("Failed to audit denial: {}", e);
+                }
                 let response =
                     make_denial_response(&id, "Request blocked: security policy violation");
                 write_message(agent_writer, &response)
@@ -5065,15 +5411,19 @@ impl ProxyBridge {
                         "stdio",
                         state.agent_id.as_deref(),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .audit
                         .log_entry_with_acis(
                             &action,
                             &dv_verdict,
                             json!({"source": "proxy", "event": "deputy_validation_failed_elicitation"}),
                             dv_envelope,
-                        )
-                        .await;
+                        ).await {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
                     write_message(agent_writer, &response)
@@ -5139,7 +5489,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit elicitation memory poisoning: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                &id,
+                                agent_writer,
+                                "elicitation memory poisoning",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
@@ -5323,7 +5683,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit elicitation DLP: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "elicitation DLP", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
@@ -5359,7 +5724,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed for elicitation allow: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            &id,
+                            agent_writer,
+                            "Audit log failed for elicitation allow",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, msg)
                     .await
@@ -5391,7 +5766,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 tracing::warn!("Blocked elicitation/create: {}", reason);
                 // SECURITY (R239-MCP-7): Do not forward raw deny reason to client.
@@ -5466,7 +5846,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "circuit breaker block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -5517,7 +5902,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit shadow agent: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "shadow agent", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -5564,7 +5954,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit principal mismatch: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "principal mismatch", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response = make_denial_response(&id, &reason);
                     write_message(agent_writer, &response)
@@ -5618,7 +6013,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit deputy validation: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "deputy validation", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -5722,7 +6122,12 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit DLP finding: {}", e);
+                if self
+                    .deny_on_audit_failure(&id, agent_writer, "DLP finding", &e)
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             let response = json!({
                 "jsonrpc": "2.0",
@@ -5859,7 +6264,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit task injection finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "task injection finding", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 if self.injection_blocking {
                     let response = json!({
@@ -5925,7 +6335,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit task access denial: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "task access denial", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response =
                             make_denial_response(&id, "Request blocked: security policy violation");
@@ -6028,7 +6443,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R239-MCP-2): Genericize ABAC deny reason for task handler.
                             let response = make_denial_response(
@@ -6080,7 +6505,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R239-MCP-2): Genericize ABAC unknown variant deny for task handler.
                             let response = make_denial_response(
@@ -6175,7 +6610,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, &response)
                     .await
@@ -6223,7 +6663,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, &response)
                     .await
@@ -6256,7 +6701,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // SECURITY (R239-MCP-4): Genericize deny reason in response.
                 let response =
@@ -6292,7 +6742,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // SECURITY (R239-MCP-4): Genericize deny reason in response.
                 let response =
@@ -6365,7 +6820,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit extension registry block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "extension registry block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response =
                     make_denial_response(&id, "Request blocked: security policy violation");
@@ -6416,7 +6876,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit circuit breaker block: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "circuit breaker block", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -6470,7 +6935,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit shadow agent: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "shadow agent", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -6517,7 +6987,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit principal mismatch: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "principal mismatch", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response = make_denial_response(&id, &reason);
                     write_message(agent_writer, &response)
@@ -6572,7 +7047,12 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit deputy validation: {}", e);
+                            if self
+                                .deny_on_audit_failure(&id, agent_writer, "deputy validation", &e)
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         let response = make_denial_response(&id, &reason);
                         write_message(agent_writer, &response)
@@ -6673,7 +7153,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R238-MCP-7): Genericize ABAC deny reason.
                             let response = make_denial_response(
@@ -6725,7 +7215,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Audit log failed for ABAC deny: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        &id,
+                                        agent_writer,
+                                        "Audit log failed for ABAC deny",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             // SECURITY (R238-MCP-7): Genericize ABAC unknown variant deny reason.
                             let response = make_denial_response(
@@ -6840,7 +7340,12 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit extension DLP finding: {}", e);
+                        if self
+                            .deny_on_audit_failure(&id, agent_writer, "extension DLP finding", &e)
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     let response =
                         make_denial_response(&id, "Request blocked: security policy violation");
@@ -6910,7 +7415,17 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit extension injection finding: {}", e);
+                            if self
+                                .deny_on_audit_failure(
+                                    &id,
+                                    agent_writer,
+                                    "extension injection finding",
+                                    &e,
+                                )
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                         if self.injection_blocking {
                             let response = make_denial_response(
@@ -7061,7 +7576,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, &response)
                     .await
@@ -7109,7 +7629,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 write_message(agent_writer, &response)
                     .await
@@ -7141,7 +7666,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 // SECURITY (R238-MCP-7): Genericize deny reason.
                 let response =
@@ -7183,7 +7713,12 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Audit log failed: {}", e);
+                    if self
+                        .deny_on_audit_failure(&id, agent_writer, "Audit log failed", &e)
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let response = make_denial_response(&id, &reason);
                 write_message(agent_writer, &response)
@@ -7417,7 +7952,17 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit passthrough DLP finding: {}", e);
+                if self
+                    .deny_on_audit_failure(
+                        msg.get("id").unwrap_or(&Value::Null),
+                        agent_writer,
+                        "passthrough DLP finding",
+                        &e,
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             // Fail-closed: deny the message. Return generic error to agent
             // to avoid leaking which DLP patterns matched.
@@ -7510,7 +8055,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit passthrough injection finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            msg.get("id").unwrap_or(&Value::Null),
+                            agent_writer,
+                            "passthrough injection finding",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 if self.injection_blocking {
                     if let Some(id) = msg.get("id") {
@@ -7598,7 +8153,17 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit passthrough memory poisoning: {}", e);
+                if self
+                    .deny_on_audit_failure(
+                        msg.get("id").unwrap_or(&Value::Null),
+                        agent_writer,
+                        "passthrough memory poisoning",
+                        &e,
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
             }
             if let Some(id) = msg.get("id") {
                 if !id.is_null() {
@@ -7802,7 +8367,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit server request block: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            msg.get("id").unwrap_or(&Value::Null),
+                            agent_writer,
+                            "server request block",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
                 let error_response = json!({
                     "jsonrpc": "2.0",
@@ -7870,7 +8445,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit notification DLP: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                msg.get("id").unwrap_or(&Value::Null),
+                                agent_writer,
+                                "notification DLP",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     if self.response_dlp_blocking {
                         return Ok(());
@@ -7944,7 +8529,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit notification injection: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                msg.get("id").unwrap_or(&Value::Null),
+                                agent_writer,
+                                "notification injection",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                     if self.injection_blocking {
                         return Ok(());
@@ -8018,7 +8613,17 @@ impl ProxyBridge {
                                     Some(&shield_security_context),
                                 );
                             if let Err(e) = self.audit.log_entry_with_acis(&deny_action, &sh_desan_verdict, json!({"source": "proxy", "event": "shield_desanitize_blocked"}), sh_desan_envelope).await {
-                                tracing::warn!("Failed to audit shield desanitization denial: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        msg.get("id").unwrap_or(&Value::Null),
+                                        agent_writer,
+                                        "shield desanitization denial",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
                             let id = msg.get("id").cloned().unwrap_or(serde_json::Value::Null);
                             let error_response = serde_json::json!({
@@ -8174,7 +8779,17 @@ impl ProxyBridge {
                             )
                             .await
                         {
-                            tracing::warn!("Failed to audit protocol version: {}", e);
+                            if self
+                                .deny_on_audit_failure(
+                                    msg.get("id").unwrap_or(&Value::Null),
+                                    agent_writer,
+                                    "protocol version",
+                                    &e,
+                                )
+                                .await?
+                            {
+                                return Ok(());
+                            }
                         }
                     }
                 }
@@ -8266,7 +8881,17 @@ impl ProxyBridge {
                 )
                 .await
             {
-                tracing::warn!("Failed to audit injection detection: {}", e);
+                if self
+                    .deny_on_audit_failure(
+                        msg.get("id").unwrap_or(&Value::Null),
+                        agent_writer,
+                        "injection detection",
+                        &e,
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
             }
 
             if should_block {
@@ -8445,7 +9070,17 @@ impl ProxyBridge {
                                 )
                                 .await
                             {
-                                tracing::warn!("Failed to audit output schema violation: {}", e);
+                                if self
+                                    .deny_on_audit_failure(
+                                        msg.get("id").unwrap_or(&Value::Null),
+                                        agent_writer,
+                                        "output schema violation",
+                                        &e,
+                                    )
+                                    .await?
+                                {
+                                    return Ok(());
+                                }
                             }
 
                             if self.output_schema_blocking {
@@ -8510,7 +9145,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit output schema context violation: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                msg.get("id").unwrap_or(&Value::Null),
+                                agent_writer,
+                                "output schema context violation",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
 
                     let blocked_response = json!({
@@ -8587,7 +9232,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit response DLP finding: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            msg.get("id").unwrap_or(&Value::Null),
+                            agent_writer,
+                            "response DLP finding",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
 
                 if self.response_dlp_blocking {
@@ -8657,7 +9312,17 @@ impl ProxyBridge {
                         )
                         .await
                     {
-                        tracing::warn!("Failed to audit semantic output contract violation: {}", e);
+                        if self
+                            .deny_on_audit_failure(
+                                msg.get("id").unwrap_or(&Value::Null),
+                                agent_writer,
+                                "semantic output contract violation",
+                                &e,
+                            )
+                            .await?
+                        {
+                            return Ok(());
+                        }
                     }
                 }
             }
@@ -8978,7 +9643,17 @@ impl ProxyBridge {
                     )
                     .await
                 {
-                    tracing::warn!("Failed to audit human oversight event: {}", e);
+                    if self
+                        .deny_on_audit_failure(
+                            msg.get("id").unwrap_or(&Value::Null),
+                            agent_writer,
+                            "human oversight event",
+                            &e,
+                        )
+                        .await?
+                    {
+                        return Ok(());
+                    }
                 }
             }
         }
