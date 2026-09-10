@@ -496,7 +496,14 @@ async fn cmd_serve(
                 table = %policy_config.audit_store.table_name,
                 "PostgreSQL audit sink initialized"
             );
-            audit_logger = audit_logger.with_sink(sink_arc.clone(), false);
+            // SECURITY (R270-SRV-1): honour audit_store.sink_failure_fatal.
+            // This previously passed a hardcoded `false`, making the documented
+            // operator setting inert. See vellaveto_server::attach_audit_sink.
+            audit_logger = vellaveto_server::attach_audit_sink(
+                audit_logger,
+                sink_arc.clone(),
+                &policy_config.audit_store,
+            );
             Some(sink_arc)
         } else {
             None

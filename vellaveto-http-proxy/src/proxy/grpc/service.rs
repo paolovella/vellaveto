@@ -1644,7 +1644,10 @@ impl McpGrpcService {
                                 Some(session_id),
                                 Some(effective_security_context),
                             );
-                            let _ = self
+                            // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                            // audit write here was invisible. The denial below is unchanged —
+                            // this only makes the lost record observable.
+                            if let Err(e) = self
                                 .state
                                 .audit
                                 .log_entry_with_acis(
@@ -1659,8 +1662,9 @@ impl McpGrpcService {
                                         "event": "presented_approval_replay_denied",
                                     }),
                                     envelope,
-                                )
-                                .await;
+                                ).await {
+                                tracing::warn!("Failed to audit denial: {}", e);
+                            }
                             return make_proto_denial_response(proto_req, "Denied by policy");
                         }
                     }
@@ -1755,7 +1759,10 @@ impl McpGrpcService {
                                 Some(session_id),
                                 Some(effective_security_context),
                             );
-                            let _ = self
+                            // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                            // audit write here was invisible. The denial below is unchanged —
+                            // this only makes the lost record observable.
+                            if let Err(e) = self
                                 .state
                                 .audit
                                 .log_entry_with_acis(
@@ -1770,8 +1777,9 @@ impl McpGrpcService {
                                         "event": "presented_approval_replay_denied",
                                     }),
                                     envelope,
-                                )
-                                .await;
+                                ).await {
+                                tracing::warn!("Failed to audit denial: {}", e);
+                            }
                             return make_proto_denial_response(proto_req, "Denied by policy");
                         }
                     }
@@ -2080,11 +2088,17 @@ impl McpGrpcService {
                     if let Some(registry) = matched_approval_registry {
                         audit_metadata["registry"] = json!(registry);
                     }
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .state
                         .audit
                         .log_entry_with_acis(&action, &deny_verdict, audit_metadata, envelope)
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     return make_proto_denial_response(proto_req, "Denied by policy");
                 }
 
@@ -2688,7 +2702,10 @@ impl McpGrpcService {
                         Some(session_id),
                         Some(effective_security_context),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .state
                         .audit
                         .log_entry_with_acis(
@@ -2704,7 +2721,10 @@ impl McpGrpcService {
                             }),
                             envelope,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     return make_proto_denial_response(proto_req, "Denied by policy");
                 }
 
@@ -3725,7 +3745,10 @@ impl McpGrpcService {
                         Some(session_id),
                         Some(effective_security_context),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .state
                         .audit
                         .log_entry_with_acis(
@@ -3742,7 +3765,10 @@ impl McpGrpcService {
                             }),
                             envelope,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     return make_proto_denial_response(proto_req, "Denied by policy");
                 }
                 let acis_envelope = build_acis_envelope_with_security_context(
@@ -4323,7 +4349,10 @@ impl McpGrpcService {
                         Some(session_id),
                         Some(effective_security_context),
                     );
-                    let _ = self
+                    // SECURITY (R274-AUDIT-1): the result was bound to `_`, so a failed
+                    // audit write here was invisible. The denial below is unchanged —
+                    // this only makes the lost record observable.
+                    if let Err(e) = self
                         .state
                         .audit
                         .log_entry_with_acis(
@@ -4340,7 +4369,10 @@ impl McpGrpcService {
                             }),
                             envelope,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!("Failed to audit denial: {}", e);
+                    }
                     return make_proto_denial_response(proto_req, "Denied by policy");
                 }
 
