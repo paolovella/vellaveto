@@ -114,7 +114,7 @@ jobs:
             scripts/generate-evidence-manifest.sh \
             scripts/report-formal-tooling.sh \
             scripts/run-dependency-monitor.sh \
-            scripts/clippy-flags.sh
+            scripts/clippy.sh
 
       - name: Format
         run: cargo fmt --all -- --check
@@ -148,7 +148,7 @@ jobs:
       # features are linted by the feature-matrix job, which is where the
       # heavier dependency trees belong.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- $(bash scripts/clippy-flags.sh)
+        run: bash scripts/clippy.sh --workspace --all-targets --locked
 
       - name: Reject unwrap()/expect() in library code
         run: |
@@ -730,7 +730,7 @@ jobs:
       # so lints behind a non-default feature were never checked anywhere —
       # zk-audit was in this matrix and still accumulated a finding.
       - name: "Clippy: ${{ matrix.name }}"
-        run: cargo clippy ${{ matrix.cargo_args }} --all-targets -- $(bash scripts/clippy-flags.sh)
+        run: bash scripts/clippy.sh ${{ matrix.cargo_args }} --all-targets
 
       - name: "Test: ${{ matrix.name }}"
         run: cargo test ${{ matrix.cargo_args }}

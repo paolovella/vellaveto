@@ -41,13 +41,12 @@ jobs:
           set -o pipefail
           # --all-features so the security dashboard covers feature-gated code
           # too; without it the SARIF report silently omits whole modules.
-          cargo clippy \
+          bash scripts/clippy.sh \
             --workspace \
             --all-targets \
             --all-features \
             --locked \
             --message-format=json \
-            -- $(bash scripts/clippy-flags.sh) \
             | clippy-sarif | tee rust-clippy-results.sarif | sarif-fmt
         continue-on-error: true
 
