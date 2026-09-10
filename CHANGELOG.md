@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **MCPSEC: availability axis added, and the reference result republished from a
+  recorded config.** The benchmark now scores two axes. `overall_score` is
+  security across P1–P10, unchanged in definition and weighting; the new
+  `availability_score` is the share of the 11 A17 legitimate-traffic cases the
+  gateway allows through. The two are separate rather than blended because a
+  gateway that denies every request scores highly on security by construction —
+  57 of the security tests pass on a denial alone, and a measured
+  deny-everything gateway reaches 96/105 (91.3%, Tier 4 "Comprehensive") while
+  allowing nothing.
+
+  The reference result is now
+  [`mcpsec/results/vellaveto-v7.0.json`](mcpsec/results/vellaveto-v7.0.json),
+  measured against the shipped `vault` preset: **94.9% security (Tier 4:
+  Comprehensive) and 63.6% availability**, 103/116 tests. The file records the
+  config path, its SHA-256, the commit and both commands, so the number can be
+  reproduced.
+
+  This supersedes the previously published **100/100 (Tier 5: Hardened)**.
+  That figure recorded no config, no command and no commit, and no CI job
+  regenerated it. Re-running the benchmark against a live server across all 18
+  shipped presets did not reproduce it on any of them; the best security score
+  available from a shipped preset was `vault` at 94.9%. The old file is retained
+  as a historical record and marked superseded.
+
+  Tier bands are deliberately **unchanged** (Tier 4 = 80–94%, Tier 5 = 95–100%),
+  so security scores stay comparable across the change and the lower headline
+  reflects measurement rather than rescaling.
+
+  The nine security failures under `vault` are configuration and surface rather
+  than absent capability: A10.4 needs rate limits, which `vault` does not
+  configure; A14.1–A14.4 need `schema_poisoning.enabled`, which defaults to
+  `false`; A13.1–A13.4 are cross-call secret splitting, a session-scoped defence
+  that lives in the MCP relay and cannot apply to the stateless `/api/evaluate`
+  endpoint the benchmark targets.
+
+  Also fixed in the harness: the "perfect gateway" mock the suite validates
+  itself against scored 100% Tier 5 while failing all eleven availability
+  tests — its documented strategy was "Default: 403 Deny" plus 14 special
+  cases, so the benchmark's own model of a correct gateway was
+  indistinguishable from a brick wall. `ATTACKS.md` now documents A17, which it
+  had omitted.
+
 ## [7.0.0] - 2026-08-04
 
 First release since 6.1.1 (2026-03-27). 273 commits.

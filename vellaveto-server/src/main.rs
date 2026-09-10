@@ -472,15 +472,15 @@ async fn cmd_serve(
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(policy_config.audit_store.pool_size)
                 .acquire_timeout(std::time::Duration::from_secs(
-                    policy_config.audit_store.connect_timeout_secs as u64,
+                    policy_config.audit_store.connect_timeout_secs,
                 ))
                 .connect(db_url)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to connect to audit store database: {}", e))?;
             let sink_config = vellaveto_audit::sink::postgres::PostgresSinkConfig {
-                buffer_size: policy_config.audit_store.sink_buffer_size as usize,
-                batch_size: policy_config.audit_store.batch_insert_size as usize,
-                flush_interval_ms: policy_config.audit_store.flush_interval_ms as u64,
+                buffer_size: policy_config.audit_store.sink_buffer_size,
+                batch_size: policy_config.audit_store.batch_insert_size,
+                flush_interval_ms: policy_config.audit_store.flush_interval_ms,
                 table_name: policy_config.audit_store.table_name.clone(),
             };
             let sink = vellaveto_audit::sink::postgres::PostgresAuditSink::new(
@@ -496,7 +496,14 @@ async fn cmd_serve(
                 table = %policy_config.audit_store.table_name,
                 "PostgreSQL audit sink initialized"
             );
-            audit_logger = audit_logger.with_sink(sink_arc.clone(), false);
+            // SECURITY (R270-SRV-1): honour audit_store.sink_failure_fatal.
+            // This previously passed a hardcoded `false`, making the documented
+            // operator setting inert. See vellaveto_server::attach_audit_sink.
+            audit_logger = vellaveto_server::attach_audit_sink(
+                audit_logger,
+                sink_arc.clone(),
+                &policy_config.audit_store,
+            );
             Some(sink_arc)
         } else {
             None
@@ -1326,7 +1333,7 @@ async fn cmd_serve(
                     if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
                         .max_connections(policy_config.audit_store.pool_size)
                         .acquire_timeout(std::time::Duration::from_secs(
-                            policy_config.audit_store.connect_timeout_secs as u64,
+                            policy_config.audit_store.connect_timeout_secs,
                         ))
                         .connect(db_url)
                         .await
@@ -1943,7 +1950,7 @@ async fn cmd_check(
     no_best_practices: bool,
     no_security_checks: bool,
 ) -> Result<()> {
-    use vellaveto_config::validation::PolicyValidator;
+    use vellaveto_config::validation::{PolicyValidator, ValidationCategory, ValidationFinding};
 
     // Load the configuration
     let policy_config = PolicyConfig::load_file(&config)
@@ -1962,7 +1969,35 @@ async fn cmd_check(
     }
 
     // Run validation
-    let result = validator.validate(&policy_config);
+    let mut result = validator.validate(&policy_config);
+
+    // Compile the policies with the same call `cmd_serve` makes at startup.
+    //
+    // The validator checks schema, semantics, security and best practices, but
+    // it never compiled anything — so a config the server refuses to start with
+    // could pass `check` with "0 errors" and exit 0. That is the worst possible
+    // direction for this tool to be wrong in: `check` exists to be trusted in
+    // CI and before a deploy. `examples/presets/devops-agent.toml` shipped
+    // broken for exactly this reason (issue #407) — it used an unknown
+    // constraint operator, which only the compiler rejects.
+    //
+    // Compiling here rather than reimplementing the compiler's rules is the
+    // point: a second implementation of "valid" is how the two drifted apart.
+    let policies = policy_config.to_policies();
+    if let Err(compile_errors) = PolicyEngine::with_policies(false, &policies) {
+        for e in &compile_errors {
+            result.findings.push(
+                ValidationFinding::error("POLICY_COMPILE", &e.reason)
+                    .at(&e.policy_id)
+                    .with_category(ValidationCategory::Semantic)
+                    .with_suggestion(
+                        "The server refuses to start on this policy. Fix it before deploying.",
+                    ),
+            );
+        }
+        result.summary.errors = result.summary.errors.saturating_add(compile_errors.len());
+        result = result.finalize();
+    }
 
     // Output results
     if format == "json" {
@@ -1973,7 +2008,6 @@ async fn cmd_check(
         println!("{}", result.to_text());
 
         // Also show policy summary
-        let policies = policy_config.to_policies();
         println!("\nPolicies loaded: {}", policies.len());
         for (i, p) in policies.iter().enumerate() {
             println!(
