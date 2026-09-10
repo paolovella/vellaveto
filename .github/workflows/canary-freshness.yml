@@ -61,13 +61,13 @@ jobs:
             echo "No canary published yet — nothing to check."
           fi
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         if: steps.presence.outputs.published == 'true'
         with:
           toolchain: stable
           profile: minimal
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.presence.outputs.published == 'true'
         with:
           cache-on-failure: true
