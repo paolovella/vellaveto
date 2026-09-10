@@ -350,7 +350,7 @@ version = "0.2.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.chacha20]]
-version = "0.10.1"
+version = "0.10.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.chacha20poly1305]]
@@ -2018,7 +2018,7 @@ version = "1.2.1"
 criteria = "safe-to-run"
 
 [[exemptions.tinyvec]]
-version = "1.12.0"
+version = "1.13.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.tinyvec_macros]]

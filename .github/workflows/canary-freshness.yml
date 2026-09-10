@@ -1,0 +1,98 @@
+name: Warrant Canary Freshness
+
+# A warrant canary only carries a signal if someone notices it has gone stale.
+# Nobody notices reliably, so this job does.
+#
+# It is deliberately quiet before a first canary is published: with no
+# .well-known/canary.json it reports that fact and succeeds. It starts
+# enforcing the moment a canary exists, so the mechanism is armed from the day
+# this workflow merges rather than waiting on a separate follow-up.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # Daily. The canary's validity window is measured in weeks, so a daily
+    # check gives many chances to act before expiry rather than one.
+    - cron: '0 6 * * *'
+  pull_request:
+    paths:
+      - '.well-known/canary.json'
+      - '.github/workflows/canary-freshness.yml'
+      - 'vellaveto-canary/**'
+
+permissions: {}
+
+env:
+  CANARY_PATH: .well-known/canary.json
+  # Fail while there is still time to sign and publish a replacement, not on
+  # the day it lapses.
+  MIN_DAYS_REMAINING: 21
+
+jobs:
+  canary-freshness:
+    name: Canary Freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Check whether a canary is published
+        id: presence
+        run: |
+          set -euo pipefail
+          if [ -f "$CANARY_PATH" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "### Warrant canary: none published"
+              echo
+              echo "No \`$CANARY_PATH\` in the repository, so there is nothing whose"
+              echo "absence carries meaning yet. This check is armed and will begin"
+              echo "enforcing freshness as soon as a canary is published."
+              echo
+              echo "To publish one, see \`docs/WARRANT_CANARY.md\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "No canary published yet — nothing to check."
+          fi
+
+      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        if: steps.presence.outputs.published == 'true'
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+        if: steps.presence.outputs.published == 'true'
+        with:
+          cache-on-failure: true
+
+      - name: Verify signature and remaining validity
+        if: steps.presence.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+          # Built from this repository rather than installed, so the check runs
+          # the same verification code the shield does.
+          cargo run --locked --quiet -p vellaveto-canary --bin vellaveto-canary -- \
+            verify --in "$CANARY_PATH" --min-days-remaining "$MIN_DAYS_REMAINING"
+
+      - name: Explain a failure
+        if: failure() && steps.presence.outputs.published == 'true'
+        run: |
+          {
+            echo "### Warrant canary needs attention"
+            echo
+            echo "\`$CANARY_PATH\` failed verification, or has fewer than"
+            echo "\`$MIN_DAYS_REMAINING\` days of validity left."
+            echo
+            echo "If this is ordinary expiry, publish a refreshed canary."
+            echo "If the signature is invalid and you did not change the file,"
+            echo "treat that as a serious event and investigate before republishing."
+            echo
+            echo "See \`docs/WARRANT_CANARY.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"

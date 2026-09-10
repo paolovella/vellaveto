@@ -489,7 +489,11 @@ mod tests {
         let config = DocumentVerificationConfig::default();
         let verifier = DocumentVerifier::new(config);
 
-        let doc = DocumentMetadata::new("doc1", "abc123", "source").with_signature("ed25519sig");
+        // SECURITY (R245-DLP-2): the bonus is only awarded for signatures of
+        // plausible Ed25519 length (>= 64). A shorter placeholder gets no
+        // bonus — see test_trust_score_short_signature_gets_no_bonus.
+        let signature = "e".repeat(64);
+        let doc = DocumentMetadata::new("doc1", "abc123", "source").with_signature(signature);
         let score = verifier.compute_trust_score(&doc);
 
         assert!(score.score >= 0.7);

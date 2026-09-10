@@ -321,8 +321,8 @@ fn test_witness_store_restore_prepends_before_existing() {
     // Drain all — should be [0, 1, 2, 3, 4]
     let all = store.drain(100).unwrap();
     assert_eq!(all.len(), 5);
-    for i in 0..5 {
-        assert_eq!(all[i].sequence, i as u64, "wrong sequence at index {}", i);
+    for (i, witness) in all.iter().enumerate() {
+        assert_eq!(witness.sequence, i as u64, "wrong sequence at index {}", i);
     }
 }
 
