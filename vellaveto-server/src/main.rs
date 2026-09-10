@@ -472,15 +472,15 @@ async fn cmd_serve(
             let pool = sqlx::postgres::PgPoolOptions::new()
                 .max_connections(policy_config.audit_store.pool_size)
                 .acquire_timeout(std::time::Duration::from_secs(
-                    policy_config.audit_store.connect_timeout_secs as u64,
+                    policy_config.audit_store.connect_timeout_secs,
                 ))
                 .connect(db_url)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to connect to audit store database: {}", e))?;
             let sink_config = vellaveto_audit::sink::postgres::PostgresSinkConfig {
-                buffer_size: policy_config.audit_store.sink_buffer_size as usize,
-                batch_size: policy_config.audit_store.batch_insert_size as usize,
-                flush_interval_ms: policy_config.audit_store.flush_interval_ms as u64,
+                buffer_size: policy_config.audit_store.sink_buffer_size,
+                batch_size: policy_config.audit_store.batch_insert_size,
+                flush_interval_ms: policy_config.audit_store.flush_interval_ms,
                 table_name: policy_config.audit_store.table_name.clone(),
             };
             let sink = vellaveto_audit::sink::postgres::PostgresAuditSink::new(
@@ -1333,7 +1333,7 @@ async fn cmd_serve(
                     if let Ok(pool) = sqlx::postgres::PgPoolOptions::new()
                         .max_connections(policy_config.audit_store.pool_size)
                         .acquire_timeout(std::time::Duration::from_secs(
-                            policy_config.audit_store.connect_timeout_secs as u64,
+                            policy_config.audit_store.connect_timeout_secs,
                         ))
                         .connect(db_url)
                         .await
