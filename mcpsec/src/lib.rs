@@ -10,7 +10,7 @@
 //! MCPSEC: MCP Security Benchmark Framework
 //!
 //! Vendor-neutral security evaluation for MCP gateways.
-//! Tests 10 security properties across 16 attack classes (105 tests).
+//! Tests 10 security properties across 17 attack classes (116 tests).
 
 pub mod attacks;
 pub mod compare;

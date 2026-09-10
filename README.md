@@ -424,7 +424,21 @@ Full details: [Security Guarantees](docs/SECURITY_GUARANTEES.md) | [Threat Model
 
 ### MCPSEC Benchmark
 
-We built [MCPSEC](mcpsec/), an open, vendor-neutral security benchmark for MCP gateways (Apache-2.0). It defines 10 formal security properties and 105 reproducible attack test cases across 16 attack classes. The current published reference result for VellaVeto is [mcpsec/results/vellaveto-v6.1.json](mcpsec/results/vellaveto-v6.1.json): **100/100 (Tier 5: Hardened)** on 105/105 tests. Run it against any MCP gateway — including ours:
+We built [MCPSEC](mcpsec/), an open security benchmark for MCP gateways (Apache-2.0). It defines 10 formal security properties and 116 attack test cases across 17 attack classes, scored on **two axes**: security, and availability — the share of legitimate traffic allowed through. Both matter, because a gateway that denies every request scores highly on security by construction and is useless.
+
+The current reference result is [mcpsec/results/vellaveto-v7.0.json](mcpsec/results/vellaveto-v7.0.json), measured against the shipped [`vault`](examples/presets/vault.toml) preset:
+
+| Axis | Score |
+|---|---|
+| Security | **94.9% (Tier 4: Comprehensive)** |
+| Availability | **63.6%** |
+| Tests | 103/116 passed |
+
+The result file records the config, its SHA-256, the commit and both commands, so it can be reproduced. The nine security failures are configuration and surface rather than absent capability: A10.4 needs rate limits, which `vault` does not configure; A14.1–A14.4 need `schema_poisoning.enabled`, which defaults to `false`; A13.1–A13.4 are cross-call secret splitting, a session-scoped defence that lives in the MCP relay and cannot apply to the stateless `/api/evaluate` endpoint this benchmark targets.
+
+The earlier published figure of 100/100 (Tier 5) recorded no config, no command and no commit, and re-running the benchmark across all 18 shipped presets did not reproduce it on any of them. [That file](mcpsec/results/vellaveto-v6.1.json) is retained as a historical record and marked superseded.
+
+Run it against any MCP gateway — including ours:
 
 ```bash
 cargo run -p mcpsec -- --target http://localhost:3000 --format markdown
@@ -466,7 +480,7 @@ Full details: [Compliance Guide](docs/COMPLIANCE.md) | [Website: vellaveto.onlin
 | **Consumer privacy** | PII sanitization, session isolation, credential vault, stylometric resistance | None | None | PII scanning (Presidio) |
 | **Enterprise IAM** | OIDC, SAML, RBAC, SCIM, DPoP | None | None | None |
 | **Response attestation** | HMAC-SHA256 content-bound scan results | None | None | None |
-| **MCPSEC score** | 100/100 (Tier 5, reference run) | Not tested | Not applicable | Not tested |
+| **MCPSEC score** | 94.9% security (Tier 4) / 63.6% availability, `vault` preset | Not tested | Not applicable | Not tested |
 | **Ease of setup** | `--protect shield` (one flag) / Docker / Helm | Docker / binary | `pip install` | `pip install` |
 | **License** | MPL-2.0 / Apache-2.0 / BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 

@@ -7,7 +7,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-//! Attack registry — defines all 105 test cases across 16 attack classes.
+//! Attack registry — defines all 116 test cases across 17 attack classes.
 
 pub mod a01_injection;
 pub mod a02_rug_pull;
