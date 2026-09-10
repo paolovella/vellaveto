@@ -97,6 +97,7 @@
 pub mod agent_card;
 pub mod error;
 pub mod extractor;
+pub mod fetch;
 pub mod message;
 pub mod proxy;
 pub mod signature;
@@ -112,6 +113,7 @@ pub use extractor::{
     extract_a2a_action, get_method_name, get_request_id, make_a2a_denial_response,
     make_a2a_error_response, make_a2a_success_response, requires_policy_check, A2A_TOOL,
 };
+pub use fetch::{AgentCardFetcher, AGENT_CARD_CLAIMS_HEADER, AGENT_CARD_SIGNATURE_HEADER};
 pub use message::{
     classify_a2a_message, extract_text_content, normalize_a2a_method, A2aMessage, A2aMessageType,
     FileContent, MessagePart, PartContent, TaskState,

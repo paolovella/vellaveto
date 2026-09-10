@@ -415,9 +415,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13017 |
+| Rust tests | 13051 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 13994 |
+| Total tests tracked by manifest | 14028 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |

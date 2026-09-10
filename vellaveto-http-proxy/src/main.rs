@@ -988,6 +988,40 @@ async fn main() -> Result<()> {
     #[cfg(feature = "grpc")]
     let grpc_proxy_state = state.clone();
 
+    // Start the A2A listener, which is where Agent Card signature enforcement
+    // actually runs. It binds its own address (a2a.listen_addr) and forwards to
+    // a2a.upstream_url, so it is independent of the MCP proxy above and does not
+    // affect it when disabled.
+    #[cfg(feature = "a2a")]
+    if policy_config.a2a.enabled {
+        let a2a_cfg = policy_config.a2a.clone();
+        let a2a_state = vellaveto_http_proxy::a2a_listener::A2aListenerState::from_config(
+            &a2a_cfg,
+            state.engine.clone(),
+            state.policies.clone(),
+            state.audit.clone(),
+        )
+        .map_err(|e| anyhow::anyhow!("A2A listener configuration error: {e}"))?;
+
+        let a2a_state = Arc::new(a2a_state);
+        tokio::spawn(async move {
+            if let Err(e) = vellaveto_http_proxy::a2a_listener::serve(&a2a_cfg, a2a_state).await {
+                tracing::error!("A2A listener stopped: {}", e);
+            }
+        });
+    }
+
+    #[cfg(not(feature = "a2a"))]
+    if policy_config.a2a.enabled {
+        // Fail loudly rather than silently ignoring an enabled security control:
+        // an operator who configured A2A enforcement must not believe it is
+        // running when the binary cannot run it.
+        anyhow::bail!(
+            "a2a.enabled is true but this binary was compiled without the `a2a` feature. \
+             Rebuild with `--features a2a` to enable Agent Card signature enforcement."
+        );
+    }
+
     // Build router
     // SECURITY (R8-HTTP-1): Apply a 1 MB request body limit to prevent
     // resource exhaustion from oversized payloads. Matches vellaveto-server.

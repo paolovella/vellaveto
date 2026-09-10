@@ -8,6 +8,7 @@
 //! A2A (Agent-to-Agent) protocol security configuration.
 
 use crate::default_true;
+use crate::validation::validate_ed25519_pubkey;
 use serde::{Deserialize, Serialize};
 
 /// A2A (Agent-to-Agent) protocol security configuration.
@@ -32,6 +33,17 @@ use serde::{Deserialize, Serialize};
 /// max_message_size = 10485760
 /// request_timeout_ms = 30000
 /// allowed_task_operations = []
+///
+/// [a2a.signature]
+/// enabled = true
+/// max_token_lifetime_secs = 3600
+/// clock_skew_secs = 60
+/// require_card_hash_match = true
+///
+/// [[a2a.signature.trusted_keys]]
+/// key_id = "agent-prod-2026"
+/// public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+/// issuer = "https://agent.example.com"
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -89,6 +101,79 @@ pub struct A2aConfig {
     /// Valid values: "get", "cancel", "resubscribe"
     #[serde(default)]
     pub allowed_task_operations: Vec<String>,
+
+    /// Agent Card Ed25519 signature enforcement.
+    #[serde(default)]
+    pub signature: A2aSignatureConfig,
+}
+
+/// Agent Card Ed25519 signature enforcement configuration.
+///
+/// Mirrors `vellaveto_mcp::a2a::SignatureEnforcementConfig` and supplies the
+/// trusted signing keys, which have no other source — without at least one key
+/// no card can ever verify.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct A2aSignatureConfig {
+    /// Enforce Agent Card signatures. Default: true (fail-closed).
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Maximum accepted card token lifetime in seconds. Default: 3600.
+    #[serde(default = "default_a2a_max_token_lifetime")]
+    pub max_token_lifetime_secs: u64,
+
+    /// Clock skew tolerance in seconds. Default: 60.
+    #[serde(default = "default_a2a_clock_skew")]
+    pub clock_skew_secs: u64,
+
+    /// Require the claims' card hash to match the fetched card. Default: true.
+    ///
+    /// Turning this off accepts a signature over a *different* card than the
+    /// one being used, so it defaults on and should stay on.
+    #[serde(default = "default_true")]
+    pub require_card_hash_match: bool,
+
+    /// Trusted Ed25519 signing keys. Default: empty.
+    #[serde(default)]
+    pub trusted_keys: Vec<TrustedAgentKey>,
+}
+
+/// A trusted Ed25519 Agent Card signing key.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct TrustedAgentKey {
+    /// Key identifier, matched against the `kid` claim on a card.
+    pub key_id: String,
+
+    /// Hex-encoded Ed25519 verifying key (32 bytes).
+    pub public_key: String,
+
+    /// Expected issuer for cards signed with this key.
+    pub issuer: String,
+}
+
+impl Default for A2aSignatureConfig {
+    fn default() -> Self {
+        Self {
+            // SECURITY: Fail-closed — enforcement on by default. It only takes
+            // effect where the A2A listener runs, and `a2a.enabled` is false by
+            // default, so this does not silently gate other transports.
+            enabled: true,
+            max_token_lifetime_secs: default_a2a_max_token_lifetime(),
+            clock_skew_secs: default_a2a_clock_skew(),
+            require_card_hash_match: true,
+            trusted_keys: Vec::new(),
+        }
+    }
+}
+
+fn default_a2a_max_token_lifetime() -> u64 {
+    3600 // 1 hour
+}
+
+fn default_a2a_clock_skew() -> u64 {
+    60 // 1 minute
 }
 
 fn default_a2a_card_cache_secs() -> u64 {
@@ -133,6 +218,129 @@ const VALID_A2A_AUTH_METHODS: &[&str] = &["apikey", "bearer", "oauth2", "mtls"];
 
 /// Valid A2A task operations.
 const VALID_A2A_TASK_OPERATIONS: &[&str] = &["get", "cancel", "resubscribe"];
+
+/// Maximum number of trusted Agent Card signing keys.
+const MAX_A2A_TRUSTED_KEYS: usize = 64;
+
+/// Maximum `key_id` length.
+const MAX_A2A_KEY_ID_LENGTH: usize = 128;
+
+/// Maximum issuer length.
+const MAX_A2A_ISSUER_LENGTH: usize = 256;
+
+/// Maximum accepted card token lifetime (24 hours).
+const MAX_A2A_TOKEN_LIFETIME_SECS: u64 = 86_400;
+
+/// Maximum accepted clock skew tolerance (5 minutes).
+///
+/// Skew widens the window in which an expired card is still accepted, so this
+/// is deliberately far tighter than the token lifetime bound.
+const MAX_A2A_CLOCK_SKEW_SECS: u64 = 300;
+
+impl A2aSignatureConfig {
+    /// Validate signature enforcement configuration.
+    ///
+    /// The key material itself is only charset- and length-checked here; the
+    /// bytes are decoded and validated by `AgentSigningKey::new` when the
+    /// verifier is built, which keeps base64 out of this crate's dependencies.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_token_lifetime_secs == 0 {
+            return Err("a2a.signature.max_token_lifetime_secs must be > 0".to_string());
+        }
+        if self.max_token_lifetime_secs > MAX_A2A_TOKEN_LIFETIME_SECS {
+            return Err(format!(
+                "a2a.signature.max_token_lifetime_secs {} exceeds maximum {} (24 hours)",
+                self.max_token_lifetime_secs, MAX_A2A_TOKEN_LIFETIME_SECS
+            ));
+        }
+        if self.clock_skew_secs > MAX_A2A_CLOCK_SKEW_SECS {
+            return Err(format!(
+                "a2a.signature.clock_skew_secs {} exceeds maximum {} (5 minutes)",
+                self.clock_skew_secs, MAX_A2A_CLOCK_SKEW_SECS
+            ));
+        }
+
+        if self.trusted_keys.len() > MAX_A2A_TRUSTED_KEYS {
+            return Err(format!(
+                "a2a.signature.trusted_keys count {} exceeds maximum {}",
+                self.trusted_keys.len(),
+                MAX_A2A_TRUSTED_KEYS
+            ));
+        }
+
+        let mut seen_key_ids: Vec<&str> = Vec::with_capacity(self.trusted_keys.len());
+        for key in &self.trusted_keys {
+            key.validate()?;
+            // SECURITY: A duplicate key_id silently shadows one of the keys, so
+            // which public key a `kid` resolves to would depend on ordering.
+            if seen_key_ids.contains(&key.key_id.as_str()) {
+                return Err(format!(
+                    "a2a.signature.trusted_keys contains duplicate key_id '{}'",
+                    key.key_id
+                ));
+            }
+            seen_key_ids.push(&key.key_id);
+        }
+
+        Ok(())
+    }
+}
+
+impl TrustedAgentKey {
+    /// Validate a single trusted key entry.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.key_id.is_empty() {
+            return Err("a2a.signature.trusted_keys entry has an empty key_id".to_string());
+        }
+        if self.key_id.len() > MAX_A2A_KEY_ID_LENGTH {
+            return Err(format!(
+                "a2a.signature.trusted_keys key_id length {} exceeds maximum {}",
+                self.key_id.len(),
+                MAX_A2A_KEY_ID_LENGTH
+            ));
+        }
+        if vellaveto_types::has_dangerous_chars(&self.key_id) {
+            return Err(format!(
+                "a2a.signature.trusted_keys key_id '{}' contains control or format characters",
+                self.key_id
+            ));
+        }
+
+        if self.issuer.is_empty() {
+            return Err(format!(
+                "a2a.signature.trusted_keys entry '{}' has an empty issuer",
+                self.key_id
+            ));
+        }
+        if self.issuer.len() > MAX_A2A_ISSUER_LENGTH {
+            return Err(format!(
+                "a2a.signature.trusted_keys entry '{}' issuer length {} exceeds maximum {}",
+                self.key_id,
+                self.issuer.len(),
+                MAX_A2A_ISSUER_LENGTH
+            ));
+        }
+        if vellaveto_types::has_dangerous_chars(&self.issuer) {
+            return Err(format!(
+                "a2a.signature.trusted_keys entry '{}' issuer contains control or format characters",
+                self.key_id
+            ));
+        }
+
+        // Reuses the shared validator (same as acis.rs trusted_request_signers):
+        // hex, exactly 32 bytes, and not all-zeros — an all-zeros key is
+        // cryptographically invalid and would otherwise sit in the trust store
+        // looking legitimate.
+        validate_ed25519_pubkey(&self.public_key).map_err(|err| {
+            format!(
+                "a2a.signature.trusted_keys entry '{}' public_key invalid: {err}",
+                self.key_id
+            )
+        })?;
+
+        Ok(())
+    }
+}
 
 impl A2aConfig {
     /// Validate A2A configuration fields.
@@ -267,6 +475,28 @@ impl A2aConfig {
             }
         }
 
+        // Validate signature enforcement
+        self.signature.validate()?;
+
+        // SECURITY: Enforcement with no trusted keys can never verify a card, so
+        // every request would be denied. That is fail-closed but indistinguishable
+        // from a broken deployment, so surface it as a config error rather than
+        // letting the operator discover it as a total outage.
+        if self.enabled
+            && self.require_agent_card
+            && self.signature.enabled
+            && self.signature.trusted_keys.is_empty()
+        {
+            return Err(
+                "a2a.signature.enabled is true with a2a.require_agent_card, but \
+                 a2a.signature.trusted_keys is empty — no Agent Card could ever be \
+                 verified and every request would be denied. Add at least one \
+                 trusted key, or set a2a.signature.enabled = false to accept \
+                 unsigned cards."
+                    .to_string(),
+            );
+        }
+
         Ok(())
     }
 }
@@ -289,6 +519,7 @@ impl Default for A2aConfig {
             request_timeout_ms: default_a2a_timeout(),
             // SECURITY: Fail-closed — only allow safe read-only task operations by default.
             allowed_task_operations: vec!["get".into(), "cancel".into(), "resubscribe".into()],
+            signature: A2aSignatureConfig::default(),
         }
     }
 }

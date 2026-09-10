@@ -12,6 +12,8 @@
 //! Re-exports proxy, session, and OAuth modules for use by both the binary
 //! and integration tests.
 
+#[cfg(feature = "a2a")]
+pub mod a2a_listener;
 pub mod federation;
 pub mod oauth;
 pub mod proxy;
