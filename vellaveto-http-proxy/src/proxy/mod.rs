@@ -118,6 +118,11 @@ pub struct ProxyState {
     pub sessions: Arc<SessionStore>,
     pub upstream_url: String,
     pub http_client: reqwest::Client,
+    /// When true, responses may be padded to fixed size buckets — but only for
+    /// clients that explicitly negotiate it. A padded body is not valid JSON, so
+    /// a client that did not ask always gets the unpadded body.
+    pub traffic_padding: bool,
+
     /// When true, correlation and tracing headers are not propagated upstream.
     ///
     /// `traceparent`, `tracestate`, and the `x-*-trace-id` family let an

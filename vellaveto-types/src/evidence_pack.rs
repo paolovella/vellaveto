@@ -300,8 +300,26 @@ impl EvidencePack {
     /// `Checkpoint::signing_content()`) to produce a deterministic
     /// byte sequence independent of serialization format.
     pub fn signing_content(&self) -> Vec<u8> {
+        self.signing_content_internal(true)
+    }
+
+    /// Evidence pack signing content prior to domain separation.
+    ///
+    /// SECURITY (DOC-CRED-2): Verification falls back to this so packs signed
+    /// before domain separation keep verifying. Never used for signing.
+    pub fn undomained_signing_content(&self) -> Vec<u8> {
+        self.signing_content_internal(false)
+    }
+
+    fn signing_content_internal(&self, domain_separated: bool) -> Vec<u8> {
         use sha2::{Digest, Sha256};
-        let mut hasher = Sha256::new();
+        let mut hasher = if domain_separated {
+            crate::signing_domain::domain_separated_hasher(
+                crate::signing_domain::DOMAIN_EVIDENCE_PACK,
+            )
+        } else {
+            Sha256::new()
+        };
         let hash_field = |h: &mut Sha256, data: &[u8]| {
             h.update((data.len() as u64).to_le_bytes());
             h.update(data);

@@ -140,7 +140,9 @@ impl SessionIsolator {
         sessions.insert(
             session_id.to_string(),
             SessionState {
-                sanitizer: QuerySanitizer::new(PiiScanner::new(&self.custom_patterns)),
+                sanitizer: QuerySanitizer::new(PiiScanner::new_for_sanitizer(
+                    &self.custom_patterns,
+                )),
                 history: VecDeque::new(),
             },
         );

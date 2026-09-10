@@ -16,7 +16,10 @@ use crate::error::ShieldProxyError;
 
 /// Size buckets for request padding (in bytes).
 /// Requests are padded to the smallest bucket that fits the content.
-const SIZE_BUCKETS: [usize; 5] = [512, 2_048, 8_192, 32_768, 131_072];
+///
+/// Public so the proxy pads to the same buckets this crate documents, rather
+/// than restating them at the call site and drifting.
+pub const SIZE_BUCKETS: [usize; 5] = [512, 2_048, 8_192, 32_768, 131_072];
 
 /// Maximum padding size (128 KB). Requests larger than this are not padded.
 const MAX_PADDED_SIZE: usize = 131_072;
@@ -175,6 +178,32 @@ pub fn unpad_content(padded: &[u8]) -> Result<Vec<u8>, ShieldProxyError> {
 }
 
 /// Headers that should be stripped for privacy (trace/correlation IDs).
+/// Request header a client sends to opt in to padded responses.
+///
+/// Padding is only applied when the client asks for it. A padded body carries
+/// the framing below and is therefore not valid JSON, so sending one to a client
+/// that did not ask would break it. Absence of this header means no padding,
+/// which is what every standard MCP client will get.
+pub const PADDING_NEGOTIATION_HEADER: &str = "x-vellaveto-padding";
+
+/// Response header naming the framing version actually applied.
+///
+/// Present only on padded responses. A client that sees it must strip the
+/// framing with [`unpad_content`] before parsing the body.
+pub const PADDING_APPLIED_HEADER: &str = "x-vellaveto-padding-applied";
+
+/// The only framing version defined: `[4-byte LE length][content][zero padding]`.
+pub const PADDING_VERSION_V1: &str = "v1";
+
+/// Whether a client's negotiation header opts in to a framing version we speak.
+///
+/// Unknown versions are refused rather than guessed at: sending v1 framing to a
+/// client that asked for something else would corrupt its response just as
+/// surely as padding an unaware client.
+pub fn client_accepts_padding(header_value: Option<&str>) -> bool {
+    header_value.is_some_and(|v| v.trim().eq_ignore_ascii_case(PADDING_VERSION_V1))
+}
+
 pub const PRIVACY_STRIP_HEADERS: &[&str] = &[
     "traceparent",
     "tracestate",

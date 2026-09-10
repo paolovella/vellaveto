@@ -5003,6 +5003,7 @@ fn make_test_proxy_state(canonicalize: bool) -> ProxyState {
         audit: Arc::new(AuditLogger::new(PathBuf::from("/tmp/test-audit.log"))),
         sessions: Arc::new(SessionStore::new(std::time::Duration::from_secs(300), 100)),
         upstream_url: "http://localhost:9999".to_string(),
+        traffic_padding: false,
         strip_privacy_headers: false,
         http_client: reqwest::Client::new(),
         oauth: None,
@@ -5157,6 +5158,92 @@ fn test_ingest_tools_for_discovery_without_engine_is_inert() {
         &state,
         &serde_json::json!({"result": {"tools": [{"name": "x", "description": "y"}]}}),
     );
+}
+
+/// Padding requires BOTH the operator config and the client's opt-in. Either
+/// missing means the body goes out untouched — which is what every standard MCP
+/// client gets, since a padded body is not valid JSON.
+#[test]
+fn test_response_padding_requires_config_and_client_optin() {
+    let mut state = make_test_proxy_state(false);
+    let body = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}".to_vec();
+
+    for (config_on, client_optin) in [(false, false), (false, true), (true, false)] {
+        state.traffic_padding = config_on;
+        let (out, version) =
+            super::upstream::apply_response_padding(&state, client_optin, body.clone());
+        assert_eq!(
+            out, body,
+            "body must be untouched (config={config_on}, client={client_optin})"
+        );
+        assert!(version.is_none(), "no padding header without both sides");
+    }
+}
+
+/// With both sides agreeing, the body is padded to a bucket and the framing is
+/// advertised — and a client that strips it gets the original bytes back. This
+/// round trip is the only in-tree consumer of padding, by design: no standard
+/// MCP client will ever negotiate it.
+#[test]
+fn test_response_padding_round_trips_for_opted_in_client() {
+    use vellaveto_http_proxy_shield::traffic_padding::{unpad_content, SIZE_BUCKETS};
+
+    let mut state = make_test_proxy_state(false);
+    state.traffic_padding = true;
+
+    let body = b"{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[]}}".to_vec();
+    let (padded, version) = super::upstream::apply_response_padding(&state, true, body.clone());
+
+    assert_eq!(version, Some("v1"), "framing version must be advertised");
+    assert_ne!(padded, body, "body must actually be padded");
+    assert!(
+        SIZE_BUCKETS.contains(&padded.len()),
+        "padded length {} must be one of the documented buckets",
+        padded.len()
+    );
+    assert_eq!(
+        unpad_content(&padded).expect("padded body must unpad"),
+        body,
+        "a client that strips the framing must recover the original bytes"
+    );
+}
+
+/// Bodies too large to bucket are sent unpadded rather than framed. Framing them
+/// would break the client for no privacy gain, since the size is already outside
+/// every bucket.
+#[test]
+fn test_response_padding_skips_oversized_bodies() {
+    use vellaveto_http_proxy_shield::traffic_padding::SIZE_BUCKETS;
+
+    let mut state = make_test_proxy_state(false);
+    state.traffic_padding = true;
+
+    let largest = SIZE_BUCKETS[SIZE_BUCKETS.len() - 1];
+    let body = vec![b'x'; largest + 1];
+    let (out, version) = super::upstream::apply_response_padding(&state, true, body.clone());
+
+    assert_eq!(out, body, "oversized body must pass through unpadded");
+    assert!(
+        version.is_none(),
+        "no framing header when nothing was framed"
+    );
+}
+
+/// Only framing versions we actually speak count as opt-in. Guessing at an
+/// unknown version would corrupt that client's response just as surely as
+/// padding an unaware one.
+#[test]
+fn test_padding_negotiation_rejects_unknown_versions() {
+    use vellaveto_http_proxy_shield::traffic_padding::client_accepts_padding;
+
+    assert!(client_accepts_padding(Some("v1")));
+    assert!(client_accepts_padding(Some("V1")), "case-insensitive");
+    assert!(client_accepts_padding(Some("  v1  ")), "surrounding space");
+
+    assert!(!client_accepts_padding(None), "absent header is not opt-in");
+    assert!(!client_accepts_padding(Some("v2")), "unknown version");
+    assert!(!client_accepts_padding(Some("")), "empty is not opt-in");
+    assert!(!client_accepts_padding(Some("v1, v2")), "list is not v1");
 }
 
 /// The privacy header list is authoritative: every name in it is stripped

@@ -536,20 +536,78 @@ impl SecureTask {
         self.seen_nonces.iter().any(|n| n == nonce)
     }
 
-    /// Record a nonce as seen.
-    /// Enforces `MAX_NONCES_CAP` regardless of `max_nonces` field value.
-    /// SECURITY (FIND-R60-007): Truncates nonce to `MAX_ENTRY_LEN` bytes at
-    /// runtime to match the `validate()` bound and prevent memory exhaustion
-    /// from attacker-controlled nonce values.
+    /// Record a nonce as seen, evicting the oldest when full.
+    ///
+    /// # Prefer [`try_record_nonce`]
+    ///
+    /// SECURITY (DOC-CRED-6): Evicting a nonce un-does the replay protection
+    /// it was recording. Once evicted, a captured request carrying that nonce
+    /// verifies as fresh again, because [`is_nonce_seen`] has no memory of it.
+    /// [`try_record_nonce`] refuses instead of evicting, which is the
+    /// fail-closed behaviour every caller in this workspace wants.
+    ///
+    /// Kept for backward compatibility only.
+    ///
+    /// [`try_record_nonce`]: Self::try_record_nonce
+    /// [`is_nonce_seen`]: Self::is_nonce_seen
+    #[deprecated(
+        since = "7.0.1",
+        note = "evicting a nonce reopens the replay window it was protecting against; \
+                use try_record_nonce, which fails closed when the cache is full"
+    )]
     pub fn record_nonce(&mut self, nonce: String) {
         let effective_max = self.max_nonces.min(MAX_NONCES_CAP);
         if self.seen_nonces.len() >= effective_max {
             self.seen_nonces.remove(0); // FIFO eviction
         }
-        // Enforce MAX_ENTRY_LEN at runtime, not just in validate().
-        // SECURITY (FIND-R104-001): Walk back to a char boundary to avoid
-        // a panic on multi-byte UTF-8 sequences straddling the limit.
-        let nonce = if nonce.len() > MAX_ENTRY_LEN {
+        self.seen_nonces.push(Self::truncate_nonce(nonce));
+    }
+
+    /// Record a nonce as seen, refusing rather than evicting when full.
+    ///
+    /// Returns `false` when the cache is at capacity, leaving it unchanged. The
+    /// caller must then deny the request: recording is what makes a later replay
+    /// detectable, so a request whose nonce could not be recorded has no replay
+    /// protection and must not be honoured.
+    ///
+    /// SECURITY (DOC-CRED-6): This replaces FIFO eviction, under which an
+    /// evicted nonce became replayable — [`is_nonce_seen`] would report a
+    /// captured request as fresh once its nonce aged out of the cache.
+    ///
+    /// # Why not evict by time instead
+    ///
+    /// Time-window eviction is the usual answer, and is wrong here.
+    /// [`TaskResumeRequest`] carries no timestamp, so nothing bounds a
+    /// request's own freshness; the nonce cache is the only thing standing
+    /// between a captured request and a successful replay. Dropping nonces
+    /// after a TTL would make every captured request replayable by simply
+    /// waiting out the window — trading a replay that is hard to trigger for
+    /// one that opens on a timer. A time window only becomes correct once the
+    /// request itself carries a signed timestamp checked against that same
+    /// window, as [`crate::task::TaskResumeRequest`] does not.
+    ///
+    /// Refusing is safe in practice because `seen_nonces` is per task: one task
+    /// legitimately resumes a handful of times, not `max_nonces` times, and
+    /// only a caller holding a valid resume token ever reaches this method.
+    ///
+    /// [`is_nonce_seen`]: Self::is_nonce_seen
+    #[must_use = "a false return means the nonce was NOT recorded and the request must be denied"]
+    pub fn try_record_nonce(&mut self, nonce: String) -> bool {
+        let effective_max = self.max_nonces.min(MAX_NONCES_CAP);
+        if self.seen_nonces.len() >= effective_max {
+            return false;
+        }
+        self.seen_nonces.push(Self::truncate_nonce(nonce));
+        true
+    }
+
+    /// Enforce `MAX_ENTRY_LEN` at runtime, not just in `validate()`.
+    ///
+    /// SECURITY (FIND-R60-007): Bounds attacker-controlled nonce values.
+    /// SECURITY (FIND-R104-001): Walks back to a char boundary to avoid a
+    /// panic on multi-byte UTF-8 sequences straddling the limit.
+    fn truncate_nonce(nonce: String) -> String {
+        if nonce.len() > MAX_ENTRY_LEN {
             let mut end = MAX_ENTRY_LEN;
             while end > 0 && !nonce.is_char_boundary(end) {
                 end -= 1;
@@ -557,8 +615,7 @@ impl SecureTask {
             nonce[..end].to_string()
         } else {
             nonce
-        };
-        self.seen_nonces.push(nonce);
+        }
     }
 
     /// Get the latest hash in the state chain.

@@ -55,6 +55,7 @@ fn make_test_state() -> crate::proxy::ProxyState {
         audit: Arc::new(audit),
         sessions: Arc::new(sessions),
         upstream_url: "http://localhost:8000/mcp".to_string(),
+        traffic_padding: false,
         strip_privacy_headers: false,
         http_client: reqwest::Client::new(),
         oauth: None,
@@ -2184,6 +2185,134 @@ async fn test_grpc_unary_unknown_tool_approval_persists_clamped_transport_proven
         &audit_entry,
         &session_id,
         &session_scope_binding,
+    );
+}
+
+#[tokio::test]
+async fn test_grpc_unknown_tool_denied_when_audit_fails_in_strict_mode() {
+    let mut state = make_test_state();
+    let dir = tempfile::tempdir().expect("tempdir");
+    // Point the audit log at a DIRECTORY so every append fails with EISDIR.
+    // Portable for root and non-root, unlike chmod-based approaches.
+    let blocked = dir.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).expect("create blocked audit dir");
+    state.audit = std::sync::Arc::new(vellaveto_audit::AuditLogger::new(blocked));
+    state.audit_strict_mode = true;
+    let approval_store = vellaveto_approval::ApprovalStore::new(
+        dir.path().join("approvals.jsonl"),
+        std::time::Duration::from_secs(300),
+    );
+    state.approval_store = Some(std::sync::Arc::new(approval_store));
+    state.tool_registry = Some(std::sync::Arc::new(
+        vellaveto_mcp::tool_registry::ToolRegistry::with_threshold(
+            dir.path().join("tool-registry"),
+            0.8,
+        ),
+    ));
+    state
+        .tool_registry
+        .as_ref()
+        .expect("tool registry")
+        .register_unknown("untrusted_tool")
+        .await;
+
+    let session_id = state.sessions.get_or_create(None);
+    let session_scope_binding = state
+        .sessions
+        .get(&session_id)
+        .expect("session")
+        .session_scope_binding
+        .clone();
+    {
+        let mut session = state.sessions.get_mut(&session_id).expect("session");
+        session.agent_identity = Some(vellaveto_types::AgentIdentity {
+            claims: std::collections::HashMap::from([
+                ("session_key_scope".to_string(), json!("persisted_client")),
+                ("execution_is_ephemeral".to_string(), json!(false)),
+            ]),
+            ..Default::default()
+        });
+    }
+
+    let req = JsonRpcRequest {
+        jsonrpc: "2.0".to_string(),
+        id_oneof: Some(json_rpc_request::IdOneof::IdInt(1)),
+        method: "tools/call".to_string(),
+        params: Some(prost_types::Struct {
+            fields: vec![
+                (
+                    "name".to_string(),
+                    prost_types::Value {
+                        kind: Some(Kind::StringValue("unknown_tool".to_string())),
+                    },
+                ),
+                (
+                    "arguments".to_string(),
+                    prost_types::Value {
+                        kind: Some(Kind::StructValue(prost_types::Struct {
+                            fields: vec![(
+                                "command".to_string(),
+                                prost_types::Value {
+                                    kind: Some(Kind::StringValue("echo hi".to_string())),
+                                },
+                            )]
+                            .into_iter()
+                            .collect(),
+                        })),
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        }),
+    };
+    let action = vellaveto_mcp::extractor::extract_action(
+        "unknown_tool",
+        &json!({
+            "command": "echo hi"
+        }),
+    );
+    let signing_key = SigningKey::from_bytes(&[46u8; 32]);
+    state.trusted_request_signers =
+        std::sync::Arc::new(trusted_request_signers_for("detached-kid", &signing_key));
+    let header = make_signed_detached_request_signature_header_with_scope(
+        &action,
+        "detached-kid",
+        &signing_key,
+        Some(session_scope_binding.as_str()),
+    );
+
+    let state = std::sync::Arc::new(state);
+    let svc = service::McpGrpcService::new(state.clone(), 100);
+    let mut request = TonicRequest::new(req);
+    request.metadata_mut().insert(
+        interceptors::METADATA_MCP_SESSION_ID,
+        session_id.parse().expect("metadata session id"),
+    );
+    request.metadata_mut().insert(
+        interceptors::METADATA_REQUEST_SIGNATURE,
+        header.parse().expect("request signature metadata"),
+    );
+
+    let response =
+        <service::McpGrpcService as proto::mcp_service_server::McpService>::call(&svc, request)
+            .await
+            .expect("grpc response")
+            .into_inner();
+
+    // SECURITY (R275-GRPC-1): the unknown-tool path returns an approval and
+    // creates an approval record, so it is one of only two sites in this file
+    // that does not deny immediately after its audit. With strict mode on and
+    // the audit write failing, the request must be denied instead.
+    //
+    // Both responses use code -32001, so the message is what distinguishes
+    // "Approval required" from the audit-failure denial.
+    let error = response.error.expect("grpc error response");
+    assert_eq!(error.code, -32001);
+    assert_eq!(
+        error.message, "Audit logging failed — request denied (strict audit mode)",
+        "strict mode must deny a decision it could not record, got: {}",
+        error.message
     );
 }
 

@@ -122,12 +122,12 @@ pub struct ShieldConfig {
     #[serde(default = "default_stylometric_level")]
     pub stylometric_level: String,
 
-    /// Whether traffic padding is enabled for HTTP transport.
+    /// Whether traffic padding is offered on the HTTP transport.
     ///
-    /// Padding uses a length-prefixed framing that a standard MCP client cannot
-    /// parse, so it only applies where the peer has negotiated support for it.
-    /// Default: false. See `strip_privacy_headers` for the part that needs no
-    /// negotiation.
+    /// Enabling this does not pad every response. Padding uses a
+    /// length-prefixed framing a standard MCP client cannot parse, so it is
+    /// applied only to clients that opt in with `X-Vellaveto-Padding: v1`.
+    /// Everyone else gets the unpadded body unchanged. Default: false.
     #[serde(default)]
     pub traffic_padding: bool,
 

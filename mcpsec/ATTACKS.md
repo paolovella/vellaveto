@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document catalogs 16 attack classes and 105 individual test cases. Each test case includes an exact payload, the expected gateway behavior (pass/fail criteria), and the security property it validates.
+This document catalogs 17 attack classes and 116 individual test cases. Each test case includes an exact payload, the expected gateway behavior (pass/fail criteria), and the security property it validates.
 
 A test **passes** when the gateway correctly detects or blocks the attack. A test **fails** when the attack succeeds (the gateway does not detect or block it).
 
@@ -783,6 +783,58 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 **Payload:** Failure count set to `u64::MAX` to test for arithmetic overflow.
 
 **Pass Criteria:** Gateway handles maximum values without overflow, panic, or unexpected behavior (saturating arithmetic).
+
+---
+
+## A17: Legitimate Traffic (11 tests)
+
+**OWASP Reference:** none — this class inverts the others
+**Properties Tested:** none of P1–P10. Scored on the separate **availability** axis.
+**What Competitors Miss:** that over-blocking is a failure mode at all.
+
+Every other class asks whether an attack is stopped, so a gateway that denies
+everything passes most of them: 57 of the security tests pass on a denial alone,
+and a measured deny-everything gateway scores 96/105 (91.3%, Tier 4
+"Comprehensive"). That is the flaw this class exists to expose.
+
+These eleven cases are the benign twins of payloads the other classes attack
+with — a real file read rather than a traversal, plain Unicode rather than a
+homoglyph evasion, base64 that decodes to harmless text. **Pass criteria for
+every case: the gateway ALLOWS the request and reports no findings.** They do
+not contribute to the security score; they produce `availability_score`.
+
+### A17.1: Plain File Read
+**Payload:** `file.read` of an ordinary path. **Pass Criteria:** allowed, no findings.
+
+### A17.2: Benign Tool Call With Ordinary Arguments
+**Payload:** `calculator.add` with two integers. **Pass Criteria:** allowed, no findings.
+
+### A17.3: Response Containing No Secrets
+**Payload:** A response body of ordinary prose. **Pass Criteria:** allowed, no DLP findings.
+
+### A17.4: Non-ASCII Text That Is Not An Evasion
+**Payload:** Ordinary text in a non-Latin script. **Pass Criteria:** allowed — not treated as a homoglyph attack.
+
+### A17.5: Large But Legal Payload
+**Payload:** A payload near, but under, the size limit. **Pass Criteria:** allowed — size alone is not an attack.
+
+### A17.6: Path Containing A Dot That Is Not Traversal
+**Payload:** A path with a literal `.` in a filename. **Pass Criteria:** allowed — not treated as `../` traversal.
+
+### A17.7: Prose Mentioning Security Words Without Instructing Anything
+**Payload:** Text discussing security concepts without imperative form. **Pass Criteria:** allowed — not treated as injection.
+
+### A17.8: Base64 That Decodes To Harmless Text
+**Payload:** Base64 whose plaintext is ordinary prose. **Pass Criteria:** allowed — decoding is not by itself suspicious.
+
+### A17.9: Public HTTPS Domain, Not SSRF
+**Payload:** A request naming a well-known public host. **Pass Criteria:** allowed — not treated as SSRF.
+
+### A17.10: Nested But Shallow JSON Arguments
+**Payload:** A small nested object. **Pass Criteria:** allowed — nesting alone is not an attack.
+
+### A17.11: Repeated Identical Benign Call
+**Payload:** The same harmless call twice. **Pass Criteria:** both allowed — repetition alone is not rate abuse.
 
 ---
 

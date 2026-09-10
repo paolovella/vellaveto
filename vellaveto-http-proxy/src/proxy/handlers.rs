@@ -170,6 +170,41 @@ fn request_state_error(error: request_state::RequestStateError, id: Option<&Valu
         .into_response()
 }
 
+/// Deny a request whose audit entry could not be written, under strict mode.
+///
+/// SECURITY (FIND-CREATIVE-003, extended by R272-HTTP-1): `audit.strict_mode`
+/// promises that "audit logging failures cause requests to be denied instead of
+/// proceeding without an audit trail … every decision must be recorded". This
+/// handler honoured that at 8 of its 47 audit-failure sites; the other 39
+/// logged and carried on, so the same operator setting meant different things
+/// depending on which branch a request took.
+///
+/// The 8 were hand-rolled copies of an identical block. gRPC already learned
+/// this lesson and has `audit_strict_deny` (`grpc/service.rs:248`), though two
+/// sites there bypass it — drift that started the same way. One function per
+/// transport is what keeps the branches in step.
+///
+/// Returns `Some(response)` when strict mode demands fail-closed, so callers
+/// read `if let Some(deny) = … { return deny; }`. `None` preserves the
+/// documented default: log the failure and continue.
+pub(super) fn audit_strict_deny(
+    state: &ProxyState,
+    id: Option<&Value>,
+    session_id: &str,
+) -> Option<Response> {
+    if !state.audit_strict_mode {
+        return None;
+    }
+    Some(attach_session_header(
+        make_jsonrpc_error(
+            id,
+            -32000,
+            "Audit logging failed — request denied (strict audit mode)",
+        ),
+        session_id,
+    ))
+}
+
 pub(super) fn validate_mcp_protocol_version_header(
     state: &ProxyState,
     headers: &HeaderMap,
@@ -493,6 +528,17 @@ pub async fn handle_mcp_post(
     body: Bytes,
 ) -> Response {
     let mut body = body;
+
+    // Whether this client negotiated padded responses. Read once here, where
+    // the request headers are in scope, and threaded to every upstream forward
+    // below. A client that does not send the header always gets an unpadded
+    // body, because a padded one is not valid JSON.
+    let client_accepts_padding =
+        vellaveto_http_proxy_shield::traffic_padding::client_accepts_padding(
+            headers
+                .get(vellaveto_http_proxy_shield::traffic_padding::PADDING_NEGOTIATION_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
 
     // SECURITY (R8-HTTP-2): Validate Content-Type is application/json.
     // The MCP Streamable HTTP spec requires JSON content. Rejecting other
@@ -818,6 +864,9 @@ pub async fn handle_mcp_post(
             .await
         {
             tracing::warn!("Failed to audit invalid call-chain header: {}", e);
+            if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                return deny;
+            }
         }
 
         // SECURITY (FIND-046): Generic message to client; detailed reason in server log.
@@ -991,6 +1040,9 @@ pub async fn handle_mcp_post(
                     .await
                 {
                     tracing::warn!("Failed to audit rug-pull block: {}", e);
+                    if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                        return deny;
+                    }
                 }
 
                 // SECURITY (FIND-R112-009): Generic client message — the tool name
@@ -1065,6 +1117,9 @@ pub async fn handle_mcp_post(
                     .await
                 {
                     tracing::warn!("Failed to audit DLP finding: {}", e);
+                    if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                        return deny;
+                    }
                 }
                 let error_response = json!({
                     "jsonrpc": "2.0",
@@ -1133,6 +1188,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit memory poisoning: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let error_response = json!({
                         "jsonrpc": "2.0",
@@ -1194,6 +1252,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit circuit breaker rejection: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let response = json!({
                         "jsonrpc": "2.0",
@@ -1304,6 +1365,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::error!("AUDIT FAILURE: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 let response = json!({
                                     "jsonrpc": "2.0",
@@ -1350,6 +1416,9 @@ pub async fn handle_mcp_post(
                                 envelope,
                             ).await {
                                 tracing::error!("AUDIT FAILURE: {}", e);
+                                if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                                    return deny;
+                                }
                             }
                             // Create pending approval if store is configured
                             let containment_context =
@@ -1425,6 +1494,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::error!("AUDIT FAILURE: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 let response = json!({
                                     "jsonrpc": "2.0",
@@ -1472,6 +1546,9 @@ pub async fn handle_mcp_post(
                                 envelope,
                             ).await {
                                 tracing::error!("AUDIT FAILURE: {}", e);
+                                if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                                    return deny;
+                                }
                             }
                             let containment_context =
                                 approval_containment_context_from_security_context(
@@ -1737,6 +1814,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit privilege escalation: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
 
                         // Return generic message to client — no policy details leaked
@@ -1807,6 +1889,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::warn!("Failed to audit ABAC deny: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 let response = serde_json::json!({
                                     "jsonrpc": "2.0",
@@ -1969,6 +2056,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit replayed presented approval: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
                         let response = serde_json::json!({
                             "jsonrpc": "2.0",
@@ -2372,7 +2464,8 @@ pub async fn handle_mcp_post(
                                 auth_header_for_upstream.as_deref(),
                                 Some((gw_tp.as_str(), gw_ts.as_deref())),
                                 &mcp_param_headers,
-                            ),
+                            )
+                            .with_client_padding(client_accepts_padding),
                         )
                         .await
                     } else {
@@ -2388,7 +2481,8 @@ pub async fn handle_mcp_post(
                                 auth_header_for_upstream.as_deref(),
                                 Some((up_tp.as_str(), up_ts.as_deref())),
                                 &mcp_param_headers,
-                            ),
+                            )
+                            .with_client_padding(client_accepts_padding),
                         )
                         .await
                     };
@@ -2438,15 +2532,8 @@ pub async fn handle_mcp_post(
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed
                         // if audit fails. No unaudited security decisions can occur.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
 
@@ -2513,15 +2600,8 @@ pub async fn handle_mcp_post(
                             e
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
 
@@ -2637,6 +2717,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit memory poisoning: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let error_response = json!({
                         "jsonrpc": "2.0",
@@ -2698,6 +2781,9 @@ pub async fn handle_mcp_post(
                     .await
                 {
                     tracing::warn!("Failed to audit resource rug-pull block: {}", e);
+                    if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                        return deny;
+                    }
                 }
                 let error_response = json!({
                     "jsonrpc": "2.0",
@@ -2769,6 +2855,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit resource DLP finding: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let error_response = json!({
                         "jsonrpc": "2.0",
@@ -2836,6 +2925,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit resource circuit breaker rejection: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let response = json!({
                         "jsonrpc": "2.0",
@@ -3062,6 +3154,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::warn!("Failed to audit resource ABAC deny: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 let response = serde_json::json!({
                                     "jsonrpc": "2.0",
@@ -3163,6 +3260,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit resource replayed approval: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
                         let response = serde_json::json!({
                             "jsonrpc": "2.0",
@@ -3199,7 +3301,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     let response = attach_session_header(response, &session_id);
@@ -3261,15 +3364,8 @@ pub async fn handle_mcp_post(
                             e
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
 
@@ -3353,7 +3449,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     attach_session_header(response, &session_id)
@@ -3393,6 +3490,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit sampling interception: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
 
                     let response = json!({
@@ -3452,6 +3552,9 @@ pub async fn handle_mcp_post(
                 .await
             {
                 tracing::warn!("Failed to audit pass-through request: {}", e);
+                if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                    return deny;
+                }
             }
 
             // SECURITY (R18-NOTIF-DLP, R29-PROXY-3): Scan ALL PassThrough
@@ -3529,6 +3632,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit notification DLP: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     if state.response_dlp_blocking {
                         return make_jsonrpc_error(
@@ -3617,6 +3723,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit passthrough injection: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
 
                         if state.injection_blocking {
@@ -3691,6 +3802,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit HTTP passthrough memory poisoning: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     return make_jsonrpc_error(
                         msg.get("id"),
@@ -3732,7 +3846,8 @@ pub async fn handle_mcp_post(
                     auth_header_for_upstream.as_deref(),
                     Some((up_tp.as_str(), up_ts.as_deref())),
                     &mcp_param_headers,
-                ),
+                )
+                .with_client_padding(client_accepts_padding),
             )
             .await;
 
@@ -3797,7 +3912,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
 
@@ -3848,6 +3964,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit elicitation interception: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
 
                     let response = json!({
@@ -3951,6 +4070,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit memory poisoning: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let error_response = json!({
                         "jsonrpc": "2.0",
@@ -4042,6 +4164,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit task injection: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
 
                         if state.injection_blocking {
@@ -4120,6 +4247,9 @@ pub async fn handle_mcp_post(
                     .await
                 {
                     tracing::warn!("Failed to audit DLP finding: {}", e);
+                    if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                        return deny;
+                    }
                 }
                 let response = json!({
                     "jsonrpc": "2.0",
@@ -4341,6 +4471,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::warn!("Failed to audit task ABAC deny: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 return attach_session_header(
                                     make_jsonrpc_error(msg.get("id"), -32001, "Denied by policy"),
@@ -4420,6 +4555,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit task replayed approval: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
                         return attach_session_header(
                             make_jsonrpc_error(msg.get("id"), -32001, "Denied by policy"),
@@ -4450,15 +4590,8 @@ pub async fn handle_mcp_post(
                             e
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
 
@@ -4482,7 +4615,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     let response = attach_trace_header(response, trace);
@@ -4518,15 +4652,8 @@ pub async fn handle_mcp_post(
                             e
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
                     // SECURITY (R38-PROXY-4): Use generic message in client-facing
@@ -4588,15 +4715,8 @@ pub async fn handle_mcp_post(
                             e
                         );
                         // SECURITY (FIND-CREATIVE-003): Strict audit mode — fail-closed.
-                        if state.audit_strict_mode {
-                            return attach_session_header(
-                                make_jsonrpc_error(
-                                    msg.get("id"),
-                                    -32000,
-                                    "Audit logging failed — request denied (strict audit mode)",
-                                ),
-                                &session_id,
-                            );
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
                         }
                     }
                     // SECURITY (R38-PROXY-4): Use generic message in client-facing
@@ -4677,6 +4797,9 @@ pub async fn handle_mcp_post(
                 .await
             {
                 tracing::warn!("Failed to audit batch rejection: {}", e);
+                if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                    return deny;
+                }
             }
             // SECURITY (FIND-R92-001): Use BATCH_NOT_ALLOWED for parity with
             // make_batch_error_response() and correct semantic error code.
@@ -4777,6 +4900,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit extension injection: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
 
                         if state.injection_blocking {
@@ -4830,6 +4958,9 @@ pub async fn handle_mcp_post(
                     envelope,
                 ).await {
                     tracing::warn!("Failed to audit extension parameter DLP: {}", e);
+                    if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                        return deny;
+                    }
                 }
                 return make_jsonrpc_error(Some(id), -32001, "Denied by policy");
             }
@@ -4887,6 +5018,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit extension memory poisoning: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     return make_jsonrpc_error(Some(id), -32001, "Denied by policy");
                 }
@@ -5096,6 +5230,11 @@ pub async fn handle_mcp_post(
                                     .await
                                 {
                                     tracing::warn!("Failed to audit extension ABAC deny: {}", e);
+                                    if let Some(deny) =
+                                        audit_strict_deny(&state, msg.get("id"), &session_id)
+                                    {
+                                        return deny;
+                                    }
                                 }
                                 let response = serde_json::json!({
                                     "jsonrpc": "2.0",
@@ -5194,6 +5333,11 @@ pub async fn handle_mcp_post(
                             .await
                         {
                             tracing::warn!("Failed to audit extension replayed approval: {}", e);
+                            if let Some(deny) =
+                                audit_strict_deny(&state, msg.get("id"), &session_id)
+                            {
+                                return deny;
+                            }
                         }
                         return attach_session_header(
                             make_jsonrpc_error(msg.get("id"), -32001, "Denied by policy"),
@@ -5220,6 +5364,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit extension allow: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let forward_body = match canonicalize_body(&state, &msg, body) {
                         Some(b) => b,
@@ -5241,7 +5388,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     attach_session_header(response, &session_id)
@@ -5273,6 +5421,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit extension deny: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let response = json!({
                         "jsonrpc": "2.0",
@@ -5320,6 +5471,9 @@ pub async fn handle_mcp_post(
                         .await
                     {
                         tracing::warn!("Failed to audit extension approval request: {}", e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
                     }
                     let mut response = json!({
                         "jsonrpc": "2.0",
@@ -5512,6 +5666,15 @@ pub async fn handle_mcp_delete(
                         )
                         .await
                     {
+                        // SECURITY (R272-HTTP-1): deliberately NOT fail-closed.
+                        // `state.sessions.remove(id)` above has already
+                        // succeeded and cannot be undone here, so returning a
+                        // denial would tell the client the termination failed
+                        // when it did not. Strict mode denies requests so an
+                        // unaudited decision does not take effect; this effect
+                        // has already taken effect. The warning is the honest
+                        // signal, and the gap is the audit record, not the
+                        // enforcement.
                         tracing::warn!("Failed to audit session termination: {}", e);
                     }
                 }
@@ -5971,15 +6134,8 @@ pub async fn handle_mcp_get(
         {
             tracing::warn!("Failed to audit invalid call-chain header on GET: {}", e);
             // SECURITY (FIND-R206-004): Strict audit mode parity with HTTP POST.
-            if state.audit_strict_mode {
-                return attach_session_header(
-                    make_jsonrpc_error(
-                        None,
-                        -32000,
-                        "Audit logging failed — request denied (strict audit mode)",
-                    ),
-                    &session_id,
-                );
+            if let Some(deny) = audit_strict_deny(&state, None, &session_id) {
+                return deny;
             }
         }
         tracing::warn!(reason = %reason, "GET /mcp: Call chain validation failed");
@@ -6090,15 +6246,8 @@ pub async fn handle_mcp_get(
     {
         tracing::warn!("Failed to audit SSE GET request: {}", e);
         // SECURITY (FIND-R206-004): Strict audit mode parity with HTTP POST.
-        if state.audit_strict_mode {
-            return attach_session_header(
-                make_jsonrpc_error(
-                    None,
-                    -32000,
-                    "Audit logging failed — request denied (strict audit mode)",
-                ),
-                &session_id,
-            );
+        if let Some(deny) = audit_strict_deny(&state, None, &session_id) {
+            return deny;
         }
     }
 

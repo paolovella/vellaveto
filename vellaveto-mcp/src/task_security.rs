@@ -334,8 +334,27 @@ impl SecureTaskManager {
             });
         }
 
-        // Record nonce
-        task.record_nonce(request.nonce.clone());
+        // Record the nonce. SECURITY (DOC-CRED-6): fail closed when the cache
+        // is full rather than evicting — an evicted nonce is a replayable one,
+        // because is_nonce_seen would report the captured request as fresh
+        // again. Denying here costs a resume; evicting would silently retire
+        // the protection this method exists to provide.
+        if !task.try_record_nonce(request.nonce.clone()) {
+            self.replay_blocked.fetch_add(1, Ordering::SeqCst);
+            tracing::warn!(
+                task_id = %request.task_id,
+                "SECURITY: replay-protection cache full for task; denying resume rather than \
+                 evicting a nonce that could then be replayed"
+            );
+            // Reuses AuthorizationFailed rather than adding a variant: this enum
+            // is public and not #[non_exhaustive], so a new variant is a major
+            // semver break. The message carries the specificity instead.
+            return Err(TaskSecurityError::AuthorizationFailed(
+                "replay-protection cache full for this task; resume denied rather than \
+                 evicting a nonce that could then be replayed"
+                    .to_string(),
+            ));
+        }
 
         // Decrypt state if available
         let decrypted_state = if let (Some(ciphertext), Some(nonce)) =
@@ -860,6 +879,58 @@ mod tests {
         let result = manager.resume_task(&resume_req).await.unwrap();
         assert!(!result.authorized);
         assert!(result.denial_reason.is_some());
+    }
+
+    /// SECURITY (DOC-CRED-6): When the per-task nonce cache fills, the resume is
+    /// denied rather than a nonce being evicted to make room. Evicting would let
+    /// the evicted nonce's request be replayed, since is_nonce_seen would no
+    /// longer recognise it.
+    #[tokio::test]
+    async fn test_resume_denied_when_replay_cache_full_rather_than_evicting() {
+        let (enc_key, hmac_key) = make_keys();
+        let manager = SecureTaskManager::new(enc_key, hmac_key).unwrap();
+
+        let task = make_task("task-1");
+        let secure = manager.create_secure_task(task, None).await.unwrap();
+        let token = secure.resume_token.clone().unwrap();
+
+        // Shrink the cache so the boundary is reachable in a test.
+        {
+            let mut tasks = manager.tasks.write().await;
+            let t = tasks.get_mut("task-1").unwrap();
+            t.max_nonces = 2;
+        }
+
+        let resume_with = |n: u8| TaskResumeRequest {
+            task_id: "task-1".to_string(),
+            resume_token: token.clone(),
+            nonce: hex::encode([n; 16]),
+            agent_id: None,
+        };
+
+        // Fill the cache with legitimate resumes.
+        for n in 1..=2u8 {
+            let r = manager.resume_task(&resume_with(n)).await.unwrap();
+            assert!(
+                r.authorized,
+                "resume {n} should succeed while cache has room"
+            );
+        }
+
+        // The next distinct nonce is refused rather than evicting nonce 1.
+        let err = manager.resume_task(&resume_with(3)).await.unwrap_err();
+        assert!(
+            matches!(err, TaskSecurityError::AuthorizationFailed(ref m) if m.contains("cache full")),
+            "expected an authorization failure naming the full cache, got {err:?}"
+        );
+
+        // The earliest nonce is still remembered, so replaying it is still
+        // caught — this is the property FIFO eviction destroyed.
+        let replay = manager.resume_task(&resume_with(1)).await;
+        assert!(
+            matches!(replay, Err(TaskSecurityError::ReplayDetected)),
+            "the earliest nonce must still be detected as a replay"
+        );
     }
 
     #[tokio::test]

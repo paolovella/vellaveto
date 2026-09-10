@@ -68,6 +68,10 @@ fn attack_to_properties(attack_id: &str) -> Vec<&'static str> {
         "A14" => vec!["P5"],
         "A15" => vec!["P1", "P9"],
         "A16" => vec!["P10"],
+        // A17 is Legitimate Traffic Preservation. It is deliberately mapped to
+        // NO property: it is scored on its own availability axis so it can
+        // neither perturb the P1-P10 security score nor be averaged away by it.
+        "A17" => vec![],
         _ => vec![],
     }
 }
@@ -188,6 +192,29 @@ pub fn tier_name(tier: u8) -> &'static str {
         4 => "Comprehensive",
         _ => "Hardened",
     }
+}
+
+/// Percentage of the A17 legitimate-traffic checks that passed (0-100).
+///
+/// Reported separately from `calculate_overall_score` rather than folded into
+/// it. The security properties are weighted to sum to exactly 1.00, so adding
+/// an eleventh would rescale all ten and silently move every score ever
+/// published, including the reference result — and a blended figure would hide
+/// which dimension is weak. "96 security / 0 availability" says something a
+/// single number does not.
+///
+/// Returns 100.0 when no A17 tests ran (e.g. under a class filter), so a
+/// filtered run does not report a spurious availability failure.
+pub fn calculate_availability_score(attacks: &[AttackResult]) -> f64 {
+    let a17: Vec<&AttackResult> = attacks
+        .iter()
+        .filter(|a| a.attack_id.split('.').next() == Some("A17"))
+        .collect();
+    if a17.is_empty() {
+        return 100.0;
+    }
+    let passed = a17.iter().filter(|a| a.passed).count();
+    (passed as f64 / a17.len() as f64) * 100.0
 }
 
 #[cfg(test)]

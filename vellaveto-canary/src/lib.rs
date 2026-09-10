@@ -116,11 +116,25 @@ fn has_dangerous_chars(s: &str) -> bool {
 /// # Errors
 /// Returns an error if JSON canonicalization fails (should never happen
 /// for well-formed inputs, but fail-closed is mandatory).
+/// Domain tag bound into the signed digest.
+///
+/// SECURITY (DOC-CRED-2): Without this, the signed value is a bare SHA-256
+/// digest — 32 opaque bytes that say nothing about which kind of artifact they
+/// came from. Seeding the hash with a type-specific constant means a canary
+/// signature cannot be presented as a signature over any other artifact type,
+/// which matters because one operator key may sign several.
+///
+/// Inlined rather than taken from `vellaveto_types::signing_domain`: this crate
+/// is deliberately standalone and Apache-2.0, so it must not depend on the
+/// BUSL-licensed workspace crates. The framing below is identical to theirs.
+const DOMAIN_WARRANT_CANARY: &str = "vellaveto/warrant-canary/v1";
+
 fn canonical_payload(
     version: u8,
     signed_date: &str,
     expires_date: &str,
     statement: &str,
+    domain_separated: bool,
 ) -> Result<Vec<u8>, String> {
     let obj = serde_json::json!({
         "version": version,
@@ -135,6 +149,13 @@ fn canonical_payload(
         .or_else(|_| serde_json::to_string(&obj))
         .map_err(|e| format!("canonical payload serialization failed: {e}"))?;
     let mut hasher = Sha256::new();
+    if domain_separated {
+        // Length-prefixed so the domain cannot be confused with the payload
+        // that follows it.
+        let domain = DOMAIN_WARRANT_CANARY.as_bytes();
+        hasher.update((domain.len() as u64).to_le_bytes());
+        hasher.update(domain);
+    }
     hasher.update(canonical.as_bytes());
     Ok(hasher.finalize().to_vec())
 }
@@ -204,7 +225,7 @@ pub fn create_canary(
         .to_string();
 
     // Sign canonical payload
-    let payload = canonical_payload(CANARY_VERSION, &signed_date, &expires_date, statement)?;
+    let payload = canonical_payload(CANARY_VERSION, &signed_date, &expires_date, statement, true)?;
     let signature = signing_key.sign(&payload);
 
     Ok(WarrantCanary {
@@ -336,14 +357,30 @@ pub fn verify_canary(canary: &WarrantCanary) -> Result<CanaryVerification, Strin
         .map_err(|_| "signature conversion failed".to_string())?;
     let signature = ed25519_dalek::Signature::from_bytes(&sig_array);
 
-    // Verify signature
+    // Verify signature.
+    //
+    // SECURITY (DOC-CRED-2): Try the domain-separated payload first, then fall
+    // back to the pre-domain-separation form so canaries published before the
+    // change keep verifying. Signing always uses the domain-separated form.
     let payload = canonical_payload(
         canary.version,
         &canary.signed_date,
         &canary.expires_date,
         &canary.statement,
+        true,
     )?;
-    let signature_valid = verifying_key.verify(&payload, &signature).is_ok();
+    let signature_valid = if verifying_key.verify(&payload, &signature).is_ok() {
+        true
+    } else {
+        let undomained = canonical_payload(
+            canary.version,
+            &canary.signed_date,
+            &canary.expires_date,
+            &canary.statement,
+            false,
+        )?;
+        verifying_key.verify(&undomained, &signature).is_ok()
+    };
 
     // Check expiration
     let expires = NaiveDate::parse_from_str(&canary.expires_date, "%Y-%m-%d")

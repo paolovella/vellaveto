@@ -11,25 +11,51 @@ Privacy-enhancing transport layer for the consumer shield:
   `shield.strip_privacy_headers`. `PRIVACY_STRIP_HEADERS` is the authoritative
   list; the proxy consults it rather than restating header names.
 - **Traffic padding** — fixed-size buckets to blunt content-length
-  fingerprinting. **Not yet integrated** — see below.
+  fingerprinting. **Integrated, opt-in per client** — see the wire format below.
 
-## Why padding is not wired up
+## Traffic padding: wire format and negotiation
 
-`pad_content` produces a framed message: a 4-byte little-endian length prefix,
-the content, then zero padding to the bucket size. The receiver strips it with
-`unpad_content`. That means a padded body is **not valid JSON**, so sending one
-to a standard MCP client breaks it.
+`pad_content` produces a framed message:
 
-Padding can therefore only be applied where both ends have agreed to it. Wiring
-it requires negotiation — a client advertising support (for example via a
-request header), the proxy padding only for those clients, and unpadded
-responses for everyone else — plus a decision about what padding is worth
-against a given observer. Under TLS an observer sees ciphertext lengths, which
-padding does help with; HTTP/2 framing and compression already obscure some of
-the same signal.
+```
+[4-byte little-endian content length][content][zero padding to bucket size]
+```
 
-Until that negotiation exists, the functions here are correct and tested but
-unused, and `shield.traffic_padding` does not pad anything.
+The receiver strips it with `unpad_content`. A padded body is therefore **not
+valid JSON**, so it can only be sent to a client that knows to unframe it.
+Padding is consequently negotiated per request, and off unless both sides agree:
+
+| | |
+|---|---|
+| **Client opts in** | sends `X-Vellaveto-Padding: v1` on the request |
+| **Proxy confirms** | responds with `X-Vellaveto-Padding-Applied: v1` and a padded body |
+| **Operator enables** | `shield.traffic_padding = true` |
+
+Both the operator setting and the client header are required. A client that does
+not send the header — which is every standard MCP client — gets the unpadded body
+byte for byte, unchanged. Unknown framing versions are refused rather than
+guessed at, since sending v1 bytes to a client expecting something else would
+corrupt its response just as surely as padding an unaware one.
+
+Bodies larger than the biggest bucket (128 KB) are sent unpadded: framing them
+would break the client for no gain, as the size already falls outside every
+bucket.
+
+### What padding is worth
+
+Against a network observer watching TLS ciphertext lengths, bucketing removes the
+fine-grained size signal that distinguishes one request from another. It does not
+hide timing, request counts, or destination, and HTTP/2 framing and transport
+compression already obscure part of the same signal. It is one input to a
+fingerprint, not a cloak.
+
+### Honest note on adoption
+
+No shipped client negotiates this yet, and standard MCP clients never will. What
+exists is a documented, opt-in protocol extension with a round-trip test as its
+only in-tree consumer. That is deliberate — the alternative was leaving
+`shield.traffic_padding` as a config key that silently did nothing — but it means
+enabling the setting changes nothing until a client is built that asks for it.
 
 ## Usage
 
