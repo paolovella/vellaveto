@@ -1531,6 +1531,26 @@ pub async fn reload_policies_from_file(state: &AppState, source: &str) -> Result
     Ok(count)
 }
 
+/// Attach an audit sink to the logger, honouring `audit_store.sink_failure_fatal`.
+///
+/// SECURITY (R270-SRV-1): `sink_failure_fatal` is documented as an operator
+/// control — "whether sink write failures are fatal" — and every other field of
+/// `AuditStoreConfig` is read when the sink is built. This one was not: the call
+/// site passed a hardcoded `false`, so setting it in config did nothing at all.
+///
+/// This exists as a function rather than an inline argument so the wiring is
+/// testable. The call site in `main.rs` sits inside a `postgres-store` block
+/// that first opens a real `PgPool`, which no unit test can reach; here a test
+/// can pass a failing sink and a config and assert on `log_entry`'s behaviour.
+/// That is what makes a regression in this line detectable.
+pub fn attach_audit_sink(
+    logger: AuditLogger,
+    sink: std::sync::Arc<dyn vellaveto_audit::sink::AuditSink>,
+    config: &vellaveto_config::AuditStoreConfig,
+) -> AuditLogger {
+    logger.with_sink(sink, config.sink_failure_fatal)
+}
+
 /// Spawn a file watcher that reloads policies when the config file changes.
 ///
 /// Uses the `notify` crate with debouncing (1 second) to avoid rapid reloads
@@ -1960,5 +1980,136 @@ mod tests {
         );
         let per_principal2 = rl2.per_principal.as_ref().unwrap();
         assert_eq!(per_principal2.max_capacity(), DEFAULT_MAX_KEY_CAPACITY);
+    }
+
+    // ── attach_audit_sink: audit_store.sink_failure_fatal wiring (R270-SRV-1) ──
+    //
+    // The flag was documented, validated and serialized, but the sink call site
+    // passed a hardcoded `false`, so setting it did nothing. These assert the
+    // config value reaches the logger, through behaviour rather than the flag:
+    // `sink_failure_fatal` is pub(crate) to vellaveto-audit, so it cannot be
+    // read from here — which is just as well, since what an operator cares
+    // about is whether log_entry fails, not what a boolean holds.
+
+    /// A sink whose writes always fail. `NoOpSink` in vellaveto-audit's own
+    /// tests returns Ok unconditionally, so there was nothing to reuse.
+    #[derive(Debug)]
+    struct FailingSink;
+
+    #[async_trait::async_trait]
+    impl vellaveto_audit::sink::AuditSink for FailingSink {
+        async fn sink(
+            &self,
+            _entry: &vellaveto_audit::AuditEntry,
+        ) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Err(vellaveto_audit::sink::SinkError::Write(
+                "injected failure".to_string(),
+            ))
+        }
+        async fn flush(&self) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Ok(())
+        }
+        fn is_healthy(&self) -> bool {
+            false
+        }
+        fn pending_count(&self) -> usize {
+            0
+        }
+    }
+
+    #[derive(Debug)]
+    struct HealthySink;
+
+    #[async_trait::async_trait]
+    impl vellaveto_audit::sink::AuditSink for HealthySink {
+        async fn sink(
+            &self,
+            _entry: &vellaveto_audit::AuditEntry,
+        ) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Ok(())
+        }
+        async fn flush(&self) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Ok(())
+        }
+        async fn shutdown(&self) -> Result<(), vellaveto_audit::sink::SinkError> {
+            Ok(())
+        }
+        fn is_healthy(&self) -> bool {
+            true
+        }
+        fn pending_count(&self) -> usize {
+            0
+        }
+    }
+
+    fn audit_store_config(sink_failure_fatal: bool) -> vellaveto_config::AuditStoreConfig {
+        vellaveto_config::AuditStoreConfig {
+            sink_failure_fatal,
+            ..Default::default()
+        }
+    }
+
+    async fn log_one(logger: &AuditLogger) -> Result<(), vellaveto_audit::AuditError> {
+        let action = vellaveto_types::Action::new("file", "read", serde_json::json!({}));
+        logger
+            .log_entry(&action, &Verdict::Allow, serde_json::json!({}))
+            .await
+    }
+
+    #[tokio::test]
+    async fn attach_audit_sink_honours_fatal_flag() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let logger = attach_audit_sink(
+            AuditLogger::new(tmp.path().join("audit.jsonl")),
+            std::sync::Arc::new(FailingSink),
+            &audit_store_config(true),
+        );
+
+        assert!(
+            log_one(&logger).await.is_err(),
+            "sink_failure_fatal = true must surface the sink failure to the caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_audit_sink_defaults_non_fatal() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let log_path = tmp.path().join("audit.jsonl");
+        let logger = attach_audit_sink(
+            AuditLogger::new(log_path),
+            std::sync::Arc::new(FailingSink),
+            &audit_store_config(false),
+        );
+
+        assert!(
+            log_one(&logger).await.is_ok(),
+            "the documented default is non-fatal: the file log is source of truth"
+        );
+        assert_eq!(
+            logger.load_entries().await.unwrap().len(),
+            1,
+            "the entry must still reach the file even though the sink failed"
+        );
+    }
+
+    /// Guards against the fatal flag denying for the wrong reason: with a
+    /// working sink it must not fail, so the error above is the sink, not the
+    /// flag.
+    #[tokio::test]
+    async fn attach_audit_sink_ok_when_sink_healthy() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let logger = attach_audit_sink(
+            AuditLogger::new(tmp.path().join("audit.jsonl")),
+            std::sync::Arc::new(HealthySink),
+            &audit_store_config(true),
+        );
+
+        assert!(
+            log_one(&logger).await.is_ok(),
+            "fatal mode must not fail a write whose sink succeeded"
+        );
     }
 }

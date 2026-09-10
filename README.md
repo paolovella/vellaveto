@@ -77,7 +77,7 @@ You type: "Read my medical records at /home/alice/health/lab-results.pdf"
 | **Session isolation** | Cross-session correlation | Each session gets a fresh credential — provider cannot link sessions to build a profile |
 | **Credential vault** | API keys, tokens passed through tool calls | Blind credential binding — provider sees the tool call but not the credential value |
 | **Stylometric resistance** | Writing style fingerprinting | Whitespace, punctuation, emoji, and filler word normalization so your writing patterns are not identifiable |
-| **Warrant canary** | Legal compulsion transparency | Ed25519-signed canary — if it stops being updated, assume legal pressure |
+| **Warrant canary** | Legal compulsion transparency | Ed25519 sign/verify tooling and a daily freshness check. **No canary is published yet**, so nothing's absence carries a signal — see [docs/WARRANT_CANARY.md](docs/WARRANT_CANARY.md) |
 
 The Shield runs locally as `vellaveto-shield` and is licensed under **MPL-2.0** — no enterprise license required.
 
@@ -365,7 +365,7 @@ Lower crates never depend on higher crates. The boundary contract (`vellaveto-ty
 | **Discovery** | Auto-discover MCP servers, tools, resources via topology graph. Detect drift, tool shadowing, namespace collisions. Topology guard as pre-policy filter. | [Architecture](#architecture) |
 | **Audit & Compliance** | Tamper-evident logs (SHA-256 + Merkle + Ed25519), ACIS decision envelopes, ZK proofs (Pedersen + Groth16), OTel-compatible span export, Annex IV documentation generator, Article 73 incident reports with cross-regulation deadlines, FRIA data export, evidence packs for 12 frameworks. | [Compliance](docs/COMPLIANCE.md) |
 | **Session Isolation** | Per-session credential rotation, context window isolation, stylometric normalization, traffic padding. Cross-session correlation is structurally prevented while users maintain full workflow continuity — context stays coherent and safe across sessions via deterministic action fingerprinting without leaking session boundaries. | [Consumer Shield](examples/presets/consumer-shield.toml) |
-| **Consumer Shield** | User-side PII sanitization, encrypted local audit (XChaCha20-Poly1305), credential vault, warrant canary. All boundary enforcement running client-side. | [Consumer Shield](examples/presets/consumer-shield.toml) |
+| **Consumer Shield** | User-side PII sanitization, encrypted local audit (XChaCha20-Poly1305), credential vault, warrant canary verification. All boundary enforcement running client-side. | [Consumer Shield](examples/presets/consumer-shield.toml) |
 | **Deployment** | 6 modes: HTTP, stdio, WebSocket, gRPC, gateway, consumer shield. K8s operator (3 CRDs), Helm chart, Terraform provider, VS Code extension. | [Deployment](docs/DEPLOYMENT.md) |
 
 ## Security
@@ -397,9 +397,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 12921 |
+| Rust tests | 12950 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 13898 |
+| Total tests tracked by manifest | 13927 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
