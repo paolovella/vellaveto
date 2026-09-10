@@ -726,6 +726,17 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Required by the `grpc` entries: vellaveto-http-proxy's build.rs compiles
+      # proto/mcp/v1/mcp.proto via prost, which shells out to protoc. Installed
+      # unconditionally rather than per-entry because `workspace all features`
+      # enables grpc too, and a matrix entry added later would silently need it.
+      # Nothing needed protoc before, since no job ever compiled grpc — which is
+      # the gap this job exists to close.
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+
       # Clippy runs before the tests: this job used to run `cargo test` only,
       # so lints behind a non-default feature were never checked anywhere —
       # zk-audit was in this matrix and still accumulated a finding.
