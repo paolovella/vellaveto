@@ -1977,7 +1977,9 @@ pub async fn handle_mcp_post(
                                     Some(&session_id),
                                     Some(&gateway_security_context),
                                 );
-                                let _ = state
+                                // SECURITY (R273-HTTP-1): the result was bound to `_`, so an audit
+                                // failure here was invisible — no warning, no metric, nothing.
+                                if let Err(e) = state
                                     .audit
                                     .log_entry_with_acis(
                                         &action,
@@ -1985,7 +1987,10 @@ pub async fn handle_mcp_post(
                                         json!({"event": "gateway_no_backend", "tool": tool_name}),
                                         envelope,
                                     )
-                                    .await;
+                                    .await
+                                {
+                                    tracing::warn!("Failed to audit decision: {}", e);
+                                }
                                 return attach_session_header(
                                     make_jsonrpc_error(
                                         msg.get("id"),
@@ -2156,7 +2161,14 @@ pub async fn handle_mcp_post(
                                                     Some(&session_id),
                                                     Some(&fallback_security_context),
                                                 );
-                                            let _ = state
+                                            // SECURITY (R273-HTTP-1): this records an ALLOW and
+                                            // execution continues past it, unlike the five sites
+                                            // whose audit is followed by an immediate error
+                                            // return. Binding the result to `_` meant an allowed
+                                            // call could proceed with its audit entry silently
+                                            // lost — no warning, no metric, and nothing for
+                                            // audit.strict_mode to act on.
+                                            if let Err(e) = state
                                                 .audit
                                                 .log_entry_with_acis(
                                                     &action,
@@ -2170,7 +2182,20 @@ pub async fn handle_mcp_post(
                                                     }),
                                                     fallback_envelope,
                                                 )
-                                                .await;
+                                                .await
+                                            {
+                                                tracing::warn!(
+                                                    "Failed to audit cross-transport fallback: {}",
+                                                    e
+                                                );
+                                                if let Some(deny) = audit_strict_deny(
+                                                    &state,
+                                                    msg.get("id"),
+                                                    &session_id,
+                                                ) {
+                                                    return deny;
+                                                }
+                                            }
                                         }
 
                                         // SECURITY (FIND-R44-002): Run the same DLP and injection
@@ -2227,7 +2252,9 @@ pub async fn handle_mcp_post(
                                                                 Some(&session_id),
                                                                 Some(&response_security_context),
                                                             );
-                                                        let _ = state
+                                                        // SECURITY (R273-HTTP-1): the result was bound to `_`, so an audit
+                                                        // failure here was invisible — no warning, no metric, nothing.
+                                                        if let Err(e) = state
                                                             .audit
                                                             .log_entry_with_acis(
                                                                 &action,
@@ -2239,8 +2266,9 @@ pub async fn handle_mcp_post(
                                                                     "findings": patterns,
                                                                 }),
                                                                 envelope,
-                                                            )
-                                                            .await;
+                                                            ).await {
+                                                            tracing::warn!("Failed to audit decision: {}", e);
+                                                        }
                                                         return attach_session_header(
                                                             StatusCode::BAD_GATEWAY.into_response(),
                                                             &session_id,
@@ -2304,7 +2332,9 @@ pub async fn handle_mcp_post(
                                                                     Some(&session_id),
                                                                     Some(&response_security_context),
                                                                 );
-                                                                let _ = state
+                                                                // SECURITY (R273-HTTP-1): the result was bound to `_`, so an audit
+                                                                // failure here was invisible — no warning, no metric, nothing.
+                                                                if let Err(e) = state
                                                                     .audit
                                                                     .log_entry_with_acis(
                                                                         &action,
@@ -2315,8 +2345,9 @@ pub async fn handle_mcp_post(
                                                                             "patterns": matches,
                                                                         }),
                                                                         envelope,
-                                                                    )
-                                                                    .await;
+                                                                    ).await {
+                                                                    tracing::warn!("Failed to audit decision: {}", e);
+                                                                }
                                                                 return attach_session_header(
                                                                     StatusCode::BAD_GATEWAY
                                                                         .into_response(),
@@ -2353,7 +2384,9 @@ pub async fn handle_mcp_post(
                                                     Some(&session_id),
                                                     Some(&response_security_context),
                                                 );
-                                            let _ = state
+                                            // SECURITY (R273-HTTP-1): the result was bound to `_`, so an audit
+                                            // failure here was invisible — no warning, no metric, nothing.
+                                            if let Err(e) = state
                                                 .audit
                                                 .log_entry_with_acis(
                                                     &action,
@@ -2365,7 +2398,10 @@ pub async fn handle_mcp_post(
                                                     }),
                                                     envelope,
                                                 )
-                                                .await;
+                                                .await
+                                            {
+                                                tracing::warn!("Failed to audit decision: {}", e);
+                                            }
                                             return attach_session_header(
                                                 StatusCode::BAD_GATEWAY.into_response(),
                                                 &session_id,
@@ -2411,7 +2447,9 @@ pub async fn handle_mcp_post(
                                                 Some(&session_id),
                                                 Some(&fallback_fail_security_context),
                                             );
-                                        let _ = state
+                                        // SECURITY (R273-HTTP-1): the result was bound to `_`, so an audit
+                                        // failure here was invisible — no warning, no metric, nothing.
+                                        if let Err(e) = state
                                             .audit
                                             .log_entry_with_acis(
                                                 &action,
@@ -2422,7 +2460,10 @@ pub async fn handle_mcp_post(
                                                 }),
                                                 envelope,
                                             )
-                                            .await;
+                                            .await
+                                        {
+                                            tracing::warn!("Failed to audit decision: {}", e);
+                                        }
                                         return attach_session_header(
                                             make_jsonrpc_error(
                                                 msg.get("id"),
