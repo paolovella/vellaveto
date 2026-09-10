@@ -399,6 +399,13 @@ pub struct AuditConfig {
     /// requests to be denied instead of proceeding without an audit trail.
     /// This ensures fail-closed behavior for security-critical deployments
     /// where every decision must be recorded.
+    ///
+    /// This is the switch that decides what an audit failure *costs*. What
+    /// *counts* as a failure is decided separately: a failed write to an
+    /// external sink only becomes an error when
+    /// [`AuditStoreConfig::sink_failure_fatal`](crate::AuditStoreConfig::sink_failure_fatal)
+    /// is set, since the file log is otherwise treated as the source of truth.
+    ///
     /// Default: false (backward compatible, fail-open for audit).
     #[serde(default)]
     pub strict_mode: bool,

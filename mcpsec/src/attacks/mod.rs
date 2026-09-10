@@ -7,7 +7,7 @@
 //
 //     http://www.apache.org/licenses/LICENSE-2.0
 
-//! Attack registry — defines all 105 test cases across 16 attack classes.
+//! Attack registry — defines all 116 test cases across 17 attack classes.
 
 pub mod a01_injection;
 pub mod a02_rug_pull;
@@ -25,6 +25,7 @@ pub mod a13_cross_call;
 pub mod a14_schema_bypass;
 pub mod a15_identity;
 pub mod a16_circuit_breaker;
+pub mod a17_availability;
 
 /// A single attack test case.
 pub struct AttackTest {
@@ -112,9 +113,10 @@ pub fn is_clean(body: &serde_json::Value, status: u16) -> bool {
     is_allow(body, status) && !has_injection(body, status) && !has_dlp(body, status)
 }
 
-/// Return all 105 attack test cases.
+/// Return all 116 test cases: 105 security attacks plus 11 legitimate-traffic
+/// checks (A17) scored on a separate availability axis.
 pub fn all_tests() -> Vec<AttackTest> {
-    let mut tests = Vec::with_capacity(105);
+    let mut tests = Vec::with_capacity(116);
     tests.extend(a01_injection::tests());
     tests.extend(a02_rug_pull::tests());
     tests.extend(a03_parameter::tests());
@@ -131,6 +133,8 @@ pub fn all_tests() -> Vec<AttackTest> {
     tests.extend(a14_schema_bypass::tests());
     tests.extend(a15_identity::tests());
     tests.extend(a16_circuit_breaker::tests());
+    // A17 is scored on its own availability axis, not the P1-P10 security score.
+    tests.extend(a17_availability::tests());
     tests
 }
 
@@ -141,11 +145,18 @@ mod tests {
     #[test]
     fn test_all_tests_count() {
         let tests = all_tests();
+        // 105 security attacks (A1-A16) + 11 legitimate-traffic checks (A17,
+        // scored on the separate availability axis).
         assert_eq!(
             tests.len(),
-            105,
-            "Expected 105 test cases, got {}",
+            116,
+            "Expected 116 test cases, got {}",
             tests.len()
+        );
+        let a17 = tests.iter().filter(|t| t.id.starts_with("A17.")).count();
+        assert_eq!(
+            a17, 11,
+            "A17 should contribute 11 legitimate-traffic checks"
         );
     }
 

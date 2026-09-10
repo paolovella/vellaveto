@@ -5829,6 +5829,7 @@ dependencies = [
  "flate2",
  "hex",
  "hostname",
+ "metrics",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",

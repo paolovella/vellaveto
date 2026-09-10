@@ -20,3 +20,7 @@ hex = { workspace = true }
 sha2 = { workspace = true }
 serde_json_canonicalizer = "0.3"
 rand = { workspace = true }
+
+[[bin]]
+name = "vellaveto-canary"
+path = "src/main.rs"

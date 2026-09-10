@@ -126,7 +126,7 @@ impl GroundingResult {
     /// Rejects NaN/Infinity scores and unbounded collections.
     pub fn validate(&self) -> Result<(), GroundingError> {
         fn check_score(name: &str, v: f32) -> Result<(), GroundingError> {
-            if !v.is_finite() || v < 0.0 || v > 1.0 {
+            if !v.is_finite() || !(0.0..=1.0).contains(&v) {
                 return Err(GroundingError::ContextError(format!(
                     "{name} score {v} is not in [0.0, 1.0]"
                 )));

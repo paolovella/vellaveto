@@ -840,6 +840,12 @@ pub(super) async fn forward_to_upstream_url(
                                             envelope,
                                         ).await {
                                             tracing::warn!("Failed to audit tool description injection: {}", e);
+                                            // SECURITY (R272-HTTP-1): strict audit mode. The request id is
+                                            // not in scope on this response path, so the denial carries a
+                                            // null id; the client correlates by the in-flight request.
+                                            if let Some(deny) = super::handlers::audit_strict_deny(state, None, session_id) {
+                                                return deny;
+                                            }
                                         }
                                     }
                                 }
@@ -946,6 +952,12 @@ pub(super) async fn forward_to_upstream_url(
                                                 envelope,
                                             ).await {
                                                 tracing::warn!("Failed to audit output schema violation: {}", e);
+                                                // SECURITY (R272-HTTP-1): strict audit mode. The request id is
+                                                // not in scope on this response path, so the denial carries a
+                                                // null id; the client correlates by the in-flight request.
+                                                if let Some(deny) = super::handlers::audit_strict_deny(state, None, session_id) {
+                                                    return deny;
+                                                }
                                             }
                                             // SECURITY (R29-PROXY-2): Actually block the
                                             // response — previously only logged Deny but
