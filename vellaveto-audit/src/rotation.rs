@@ -30,6 +30,30 @@ impl AuditLogger {
     /// Call this once at startup to seed the chain head.
     pub async fn initialize_chain(&self) -> Result<(), AuditError> {
         let entries = self.load_entries().await?;
+
+        // SECURITY (FIND-R111-007, extended by R268-AUD-1): Recover the global
+        // sequence BEFORE the empty-log early return below.
+        //
+        // FIND-R111-007 established that the counter must resume past the highest
+        // sequence already written, so restarts cannot reissue numbers. It read
+        // only the active log, which is enough while that log survives.
+        //
+        // `load_entries` reads only the active log. After `maybe_rotate` renames
+        // that file away it does not exist, and a wholly corrupt active log
+        // yields no entries either (corrupt lines are skipped, not fatal). Both
+        // reach this function with `entries` empty. Returning early there left
+        // `global_sequence` at 0, so the next appends renumbered from 0 on top of
+        // the sequences already in the rotated files — precisely the reuse the
+        // invariant on `AuditLogger::global_sequence` promises cannot happen.
+        //
+        // The chain-head, entry-count and Merkle work below genuinely has nothing
+        // to do when the active log is empty; the sequence recovery does.
+        let recovered_sequence = self.recover_max_sequence(&entries).await?;
+        self.global_sequence.store(
+            verified_audit_append::next_sequence_after_recovery(recovered_sequence),
+            Ordering::SeqCst,
+        );
+
         if entries.is_empty() {
             return Ok(());
         }
@@ -37,11 +61,12 @@ impl AuditLogger {
         // Verify the chain before trusting any hash from the file.
         // A tampered file must not poison the in-memory chain head.
         let verification = self.verify_chain().await?;
-        let mut last_hash = self.last_hash.lock().await;
+        let mut chain_head = self.chain_head.lock().await;
 
         if verification.valid {
             if let Some(last_entry) = entries.last() {
-                *last_hash = last_entry.entry_hash.clone();
+                chain_head.last_hash = last_entry.entry_hash.clone();
+                chain_head.last_timestamp = Some(last_entry.timestamp.clone());
             }
         } else {
             tracing::warn!(
@@ -58,18 +83,6 @@ impl AuditLogger {
         self.entry_count
             .store(entries.len() as u64, Ordering::SeqCst);
 
-        // SECURITY (FIND-R111-007): Initialize the global sequence counter from the
-        // highest sequence number seen across all loaded entries. This ensures that
-        // after a restart the global sequence continues from where it left off,
-        // preventing duplicate sequence numbers across process restarts.
-        // If no entries exist or none have a sequence field, start from 0.
-        let max_sequence = entries.iter().map(|e| e.sequence).max().unwrap_or(0);
-        // Start the next sequence one past the highest observed value.
-        self.global_sequence.store(
-            verified_audit_append::next_sequence_after_recovery(max_sequence),
-            Ordering::SeqCst,
-        );
-
         // Initialize Merkle tree from existing leaf file (if enabled)
         if let Some(ref merkle) = self.merkle_tree {
             let mut tree = merkle
@@ -79,6 +92,90 @@ impl AuditLogger {
         }
 
         Ok(())
+    }
+
+    /// Highest sequence number ever written under this log path.
+    ///
+    /// SECURITY (FIND-R111-007, extended by R268-AUD-1): Takes the maximum across
+    /// three sources, because no single one covers every state rotation can leave
+    /// behind:
+    ///
+    /// 1. `active_entries` — the currently active log (the only source the
+    ///    original implementation consulted).
+    /// 2. Each manifest entry's `max_sequence`, recorded at rotation time.
+    /// 3. For manifests written before that field existed, the sum of their
+    ///    `entry_count`s, less one.
+    ///
+    /// Source 3 is exact rather than a lower bound. Sequences are consumed only
+    /// by appends — `assigned_sequence` is the identity on the loaded counter
+    /// and `rotated_path` merely *reads* it — and numbering is 0-based, so after
+    /// N total appends the highest assigned value is N-1. Summing the rotated-out
+    /// entry counts therefore reconstructs the pre-rotation high-water mark
+    /// without opening a single rotated file, which matters: there can be up to
+    /// `MAX_ROTATED_FILES` of them at `MAX_AUDIT_LOG_SIZE` each. Startup stays
+    /// O(manifest), never O(history).
+    ///
+    /// A corrupt or unreadable manifest is not fatal — the active log's own
+    /// maximum is still applied — but it is reported, since it means the
+    /// high-water mark may be understated.
+    async fn recover_max_sequence(&self, active_entries: &[AuditEntry]) -> Result<u64, AuditError> {
+        let mut max_sequence = active_entries.iter().map(|e| e.sequence).max().unwrap_or(0);
+
+        let manifest_path = self.rotation_manifest_path();
+        let Some(content) = trusted_audit_fs::read_to_string_if_exists(&manifest_path).await?
+        else {
+            return Ok(max_sequence);
+        };
+
+        let mut entry_count_total: u64 = 0;
+        let mut explicit_max: u64 = 0;
+        let mut saw_explicit = false;
+
+        for line in content.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            // A manifest line we cannot parse is skipped rather than fatal, to
+            // match `load_entries`' treatment of corrupt audit lines. The warning
+            // is the observable signal.
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(line) else {
+                tracing::warn!(
+                    path = %manifest_path.display(),
+                    "Skipping unparseable rotation manifest line during sequence recovery"
+                );
+                continue;
+            };
+            if let Some(count) = entry.get("entry_count").and_then(serde_json::Value::as_u64) {
+                entry_count_total = entry_count_total.saturating_add(count);
+            }
+            if let Some(seq) = entry
+                .get("max_sequence")
+                .and_then(serde_json::Value::as_u64)
+            {
+                saw_explicit = true;
+                explicit_max = explicit_max.max(seq);
+            }
+        }
+
+        // Zero rotated entries carries no information about the high-water mark;
+        // `0 - 1` must not wrap into u64::MAX and freeze the counter forever.
+        let derived_max = entry_count_total.saturating_sub(1);
+
+        if saw_explicit && entry_count_total > 0 && explicit_max != derived_max {
+            // Both sources are meant to describe the same quantity. Disagreement
+            // means the manifest is incomplete or an entry was written outside
+            // the normal append path — worth surfacing, and worth taking the
+            // larger of the two so recovery still clears every used sequence.
+            tracing::warn!(
+                explicit_max,
+                derived_max,
+                path = %manifest_path.display(),
+                "Rotation manifest sequence high-water marks disagree; using the larger"
+            );
+        }
+
+        max_sequence = max_sequence.max(explicit_max).max(derived_max);
+        Ok(max_sequence)
     }
 
     /// Get the path to the rotation manifest file.
@@ -238,12 +335,27 @@ impl AuditLogger {
             None => "genesis".to_string(),
         };
 
+        // SECURITY (R268-AUD-1): Record the sequence high-water mark of the
+        // segment being rotated out. `initialize_chain` only ever loads the
+        // ACTIVE log, so without this the sequence counter cannot be recovered
+        // once rotation has renamed that file away — and the next entries
+        // renumber from 0 on top of sequences the rotated file already used.
+        // Computed from `entries`, which is already in hand for `tail_hash`.
+        //
+        // Adding a key here is safe despite the crate-wide `deny_unknown_fields`
+        // convention: manifest entries are read as `serde_json::Value` with
+        // `.get(…)` (see `verify_across_rotations`), never as a struct, and the
+        // signature is computed over whatever the entry contains, so old
+        // entries verify against their content and new ones against theirs.
+        let max_sequence = entries.iter().map(|e| e.sequence).max().unwrap_or(0);
+
         let mut manifest_entry = serde_json::json!({
             "timestamp": Utc::now().to_rfc3339(),
             "rotated_file": rotated_filename,
             "tail_hash": tail_hash,
             "start_hash": start_hash,
             "entry_count": entry_count,
+            "max_sequence": max_sequence,
             "previous_hash": previous_hash,
         });
         // SECURITY (R226-AUD-1): Compute unsigned canonical digest ONCE before any
@@ -851,16 +963,20 @@ impl AuditLogger {
     /// (filesystem-safe) e.g. `audit.2026-02-02T12-00-00-000042.log`.
     ///
     /// SECURITY (FIND-R111-006): Using a monotonic counter in the filename (rather
-    /// than only a second-resolution timestamp) prevents filename collisions when
-    /// multiple rotations occur within the same second. The sequence counter
-    /// (`global_sequence`) is atomically incremented on every audit entry and on
-    /// every rotation, so it is guaranteed to increase even when the wall clock does
-    /// not advance between rotations. This eliminates the need for the expensive
-    /// filesystem existence check loop used previously.
+    /// than only a second-resolution timestamp) makes filename collisions vanishingly
+    /// unlikely when multiple rotations occur within the same second.
+    ///
+    /// `global_sequence` advances on every audit *entry*, not on rotation itself —
+    /// rotation only reads it. Two rotations with no intervening append would
+    /// therefore produce the same name. That is unreachable on the normal path (a
+    /// rotation empties the active log, so the next one needs enough appends to
+    /// refill it), but the counter alone does not *guarantee* uniqueness, so the
+    /// `exists()` check with the UUID fallback below is what actually does.
     pub(crate) fn rotated_path(&self) -> PathBuf {
         let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S");
-        // Include the current global sequence counter in the filename to guarantee
-        // uniqueness even when multiple rotations happen within the same second.
+        // Include the current global sequence counter to keep names unique across
+        // rotations within the same second; see the note above on why this is a
+        // strong hint rather than a guarantee.
         let seq = self
             .global_sequence
             .load(std::sync::atomic::Ordering::SeqCst);
