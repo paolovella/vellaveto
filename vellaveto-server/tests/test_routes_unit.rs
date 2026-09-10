@@ -2286,3 +2286,82 @@ async fn health_returns_ok_when_no_cluster_configured() {
         "Cluster field should not be present or be null when no cluster configured"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Strict audit mode (FIND-005 / R269-SRV-1)
+//
+// `audit.strict_mode` is documented as: "audit logging failures cause requests
+// to be denied instead of proceeding without an audit trail … every decision
+// must be recorded". Before R269-SRV-1 the evaluate handler enforced that on
+// its final audit write only; six earlier-returning branches logged the failure
+// and served the verdict anyway. Nothing exercised strict mode at all — every
+// harness in this crate set `audit_strict_mode: false`.
+// ---------------------------------------------------------------------------
+
+/// Point the audit log at a directory so every append fails with EISDIR.
+///
+/// Chosen over permission games because it behaves the same for root and
+/// non-root, which matters in CI containers that run as root.
+fn state_with_failing_audit(strict: bool) -> (AppState, TempDir) {
+    let (mut state, tmp) = test_state();
+    let blocked = tmp.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+    state.audit = Arc::new(AuditLogger::new(blocked));
+    state.audit_strict_mode = strict;
+    (state, tmp)
+}
+
+async fn evaluate_once(state: AppState) -> StatusCode {
+    routes::build_router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_string(&json!({
+                        "tool": "file",
+                        "function": "read",
+                        "parameters": {"path": "/tmp/test"}
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn evaluate_denies_when_audit_fails_in_strict_mode() {
+    let (state, _tmp) = state_with_failing_audit(true);
+    assert_eq!(
+        evaluate_once(state).await,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "strict audit mode must deny a decision it could not record"
+    );
+}
+
+#[tokio::test]
+async fn evaluate_proceeds_when_audit_fails_without_strict_mode() {
+    let (state, _tmp) = state_with_failing_audit(false);
+    assert_eq!(
+        evaluate_once(state).await,
+        StatusCode::OK,
+        "the documented default is fail-open for availability; strict mode is opt-in"
+    );
+}
+
+/// The audit failure must be what denies, not some unrelated rejection of the
+/// request — otherwise the test above would pass for the wrong reason.
+#[tokio::test]
+async fn evaluate_succeeds_in_strict_mode_when_audit_works() {
+    let (mut state, _tmp) = test_state();
+    state.audit_strict_mode = true;
+    assert_eq!(
+        evaluate_once(state).await,
+        StatusCode::OK,
+        "strict mode must not deny when the audit write succeeds"
+    );
+}

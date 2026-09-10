@@ -28,6 +28,10 @@ rand_core_06 = { workspace = true }
 serde_json_canonicalizer = "0.3"
 regex = { workspace = true }
 unicode-normalization = { workspace = true }
+# Audit-write failure counter. Already a workspace dependency used by
+# vellaveto-server and vellaveto-http-proxy; the alternative is emitting from
+# hundreds of call sites, which is the defect this closes.
+metrics = { workspace = true }
 # Streaming SIEM exporters (Phase 4)
 reqwest = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }

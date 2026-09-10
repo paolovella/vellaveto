@@ -4855,6 +4855,70 @@ fn test_logger_with_sink_fatal_flag() {
     );
 }
 
+/// A sink whose writes always fail. `NoOpSink` returns Ok unconditionally, so
+/// until this existed the crate had no way to exercise `sink_failure_fatal` —
+/// the tests above set the flag and assert only that the boolean is stored.
+#[derive(Debug)]
+struct AlwaysFailingSink;
+
+#[async_trait::async_trait]
+impl crate::sink::AuditSink for AlwaysFailingSink {
+    async fn sink(&self, _entry: &crate::AuditEntry) -> Result<(), crate::sink::SinkError> {
+        Err(crate::sink::SinkError::Write(
+            "injected failure".to_string(),
+        ))
+    }
+
+    async fn flush(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> Result<(), crate::sink::SinkError> {
+        Ok(())
+    }
+
+    fn is_healthy(&self) -> bool {
+        false
+    }
+
+    fn pending_count(&self) -> usize {
+        0
+    }
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_true_returns_error() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), true);
+
+    assert!(
+        logger
+            .log_entry(&test_action(), &Verdict::Allow, json!({}))
+            .await
+            .is_err(),
+        "fatal mode must surface a sink write failure to the caller"
+    );
+}
+
+#[tokio::test]
+async fn test_logger_sink_failure_fatal_false_persists_to_file() {
+    let dir = TempDir::new().unwrap();
+    let logger = AuditLogger::new(dir.path().join("audit.jsonl"))
+        .with_sink(std::sync::Arc::new(AlwaysFailingSink), false);
+
+    logger
+        .log_entry(&test_action(), &Verdict::Allow, json!({}))
+        .await
+        .expect("non-fatal mode must not fail the write");
+
+    assert_eq!(
+        logger.load_entries().await.unwrap().len(),
+        1,
+        "the file log is the source of truth and must still hold the entry"
+    );
+}
+
 // ── FileAuditQuery tests ─────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -5837,6 +5901,118 @@ async fn test_r253_aud6_target_path_too_long_rejected() {
     );
 }
 
+// ── Audit write-failure counter (R276-AUD-1) ────────────────────────────────
+//
+// The counter is emitted from inside the logger so it cannot be bypassed by a
+// caller that ignores the returned error — which twenty-five call sites in this
+// workspace did (`let _ = ...`) until recently. These assert it actually fires.
+
+/// Minimal `Recorder` that counts increments for one counter name.
+///
+/// `metrics` 0.24 ships no test recorder, so this implements the trait against a
+/// shared `AtomicU64`. Only `register_counter` does anything; the rest satisfy
+/// the trait.
+#[derive(Default)]
+struct CountingRecorder {
+    hits: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl metrics::Recorder for CountingRecorder {
+    fn describe_counter(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_gauge(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn describe_histogram(
+        &self,
+        _: metrics::KeyName,
+        _: Option<metrics::Unit>,
+        _: metrics::SharedString,
+    ) {
+    }
+    fn register_counter(&self, key: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Counter {
+        if key.name() == "vellaveto_audit_write_failures_total" {
+            metrics::Counter::from_arc(self.hits.clone())
+        } else {
+            metrics::Counter::noop()
+        }
+    }
+    fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+        metrics::Gauge::noop()
+    }
+    fn register_histogram(
+        &self,
+        _: &metrics::Key,
+        _: &metrics::Metadata<'_>,
+    ) -> metrics::Histogram {
+        metrics::Histogram::noop()
+    }
+}
+
+/// Run `f` with the counting recorder installed, returning the hit count.
+///
+/// `with_local_recorder` is synchronous, so the runtime is built inside the
+/// closure rather than using `#[tokio::test]` around it.
+fn count_audit_failures<F>(f: F) -> u64
+where
+    F: FnOnce(&tokio::runtime::Runtime),
+{
+    let recorder = CountingRecorder::default();
+    let hits = recorder.hits.clone();
+    metrics::with_local_recorder(&recorder, || {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        f(&rt);
+    });
+    hits.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[test]
+fn test_audit_write_failure_increments_counter() {
+    let dir = TempDir::new().unwrap();
+    // Point the log at a directory so the append fails with EISDIR.
+    let blocked = dir.path().join("audit-path-is-a-directory");
+    std::fs::create_dir(&blocked).unwrap();
+
+    let hits = count_audit_failures(|rt| {
+        let logger = AuditLogger::new(blocked.clone());
+        let result = rt.block_on(logger.log_entry(&test_action(), &Verdict::Allow, json!({})));
+        assert!(
+            result.is_err(),
+            "the write must fail for this test to mean anything"
+        );
+    });
+
+    assert_eq!(
+        hits, 1,
+        "a failed audit write must be counted, got {hits} increments"
+    );
+}
+
+#[test]
+fn test_successful_audit_write_does_not_increment_counter() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+
+    let hits = count_audit_failures(|rt| {
+        let logger = AuditLogger::new(log_path.clone());
+        rt.block_on(logger.log_entry(&test_action(), &Verdict::Allow, json!({})))
+            .expect("write should succeed");
+    });
+
+    assert_eq!(
+        hits, 0,
+        "a successful write must not be counted as a failure"
+    );
+}
 // ═══════════════════════════════════════════════════════
 // Append-time timestamp monotonicity
 //
