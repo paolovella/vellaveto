@@ -1711,6 +1711,48 @@ impl NegotiatedTlsMetadata {
     }
 }
 
+/// Handle a failed audit write on a security-decision path.
+///
+/// SECURITY (FIND-005, parity restored by R269-SRV-1): `audit.strict_mode` is
+/// documented as "audit logging failures cause requests to be denied instead of
+/// proceeding without an audit trail … every decision must be recorded". The
+/// evaluate handler honoured that on its final audit write but not on the six
+/// registry and trust-level branches that return a verdict earlier, so a
+/// deployment with strict mode on still served decisions it had failed to
+/// record.
+///
+/// Scope, stated precisely: four of those branches return a `Deny` and two a
+/// `RequireApproval`. None of the six can serve an `Allow` — the allow path
+/// runs through the final audit write, which was already guarded. So this is
+/// not an authorization bypass. What it breaks is the recording guarantee the
+/// setting sells: denials that no auditor can see, and pending approvals
+/// created with no record of why.
+///
+/// Routing every audit failure on the decision path through this one function
+/// is what keeps the branches in step — parity by construction rather than by
+/// six copies that have to be kept in sync.
+///
+/// Returns `Err` in strict mode so callers propagate a 503 with `?`; in
+/// non-strict mode the failure is recorded and evaluation continues, which
+/// preserves the documented default (fail-open for availability).
+fn handle_decision_audit_failure(
+    state: &AppState,
+    error: &dyn std::fmt::Display,
+) -> Result<(), (StatusCode, Json<ErrorResponse>)> {
+    tracing::error!("AUDIT FAILURE: security decision not recorded: {}", error);
+    state.metrics.record_error();
+
+    if state.audit_strict_mode {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ErrorResponse {
+                error: "Audit logging failed — request denied (strict audit mode)".to_string(),
+            }),
+        ));
+    }
+    Ok(())
+}
+
 /// Build evaluate-route audit metadata, including optional TLS handshake details.
 fn build_evaluate_audit_metadata(
     tenant_id: &str,
@@ -2419,7 +2461,7 @@ async fn evaluate(
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            handle_decision_audit_failure(&state, &e)?;
                         } else {
                             crate::metrics::increment_audit_entries();
                         }
@@ -2513,7 +2555,7 @@ async fn evaluate(
                                     )
                                     .await
                                 {
-                                    tracing::error!("AUDIT FAILURE: {}", e);
+                                    handle_decision_audit_failure(&state, &e)?;
                                 } else {
                                     crate::metrics::increment_audit_entries();
                                 }
@@ -2549,7 +2591,7 @@ async fn evaluate(
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            handle_decision_audit_failure(&state, &e)?;
                         } else {
                             crate::metrics::increment_audit_entries();
                         }
@@ -2609,7 +2651,7 @@ async fn evaluate(
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            handle_decision_audit_failure(&state, &e)?;
                         } else {
                             crate::metrics::increment_audit_entries();
                         }
@@ -2706,7 +2748,7 @@ async fn evaluate(
                                     )
                                     .await
                                 {
-                                    tracing::error!("AUDIT FAILURE: {}", e);
+                                    handle_decision_audit_failure(&state, &e)?;
                                 } else {
                                     crate::metrics::increment_audit_entries();
                                 }
@@ -2742,7 +2784,7 @@ async fn evaluate(
                             )
                             .await
                         {
-                            tracing::error!("AUDIT FAILURE: {}", e);
+                            handle_decision_audit_failure(&state, &e)?;
                         } else {
                             crate::metrics::increment_audit_entries();
                         }
@@ -3070,19 +3112,10 @@ async fn evaluate(
         .log_entry_with_acis(&action, &verdict, audit_metadata, acis_envelope)
         .await
     {
-        tracing::error!("AUDIT FAILURE: security decision not recorded: {}", e);
-        state.metrics.record_error();
-
-        // SECURITY (FIND-005): Strict audit mode — fail-closed if audit fails.
-        // This ensures no unaudited security decisions can occur.
-        if state.audit_strict_mode {
-            return Err((
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ErrorResponse {
-                    error: "Audit logging failed — request denied (strict audit mode)".to_string(),
-                }),
-            ));
-        }
+        // SECURITY (FIND-005): Strict audit mode — fail-closed if audit fails,
+        // so no unaudited security decision can be served. Shared with the six
+        // earlier-returning branches; see handle_decision_audit_failure.
+        handle_decision_audit_failure(&state, &e)?;
     } else {
         crate::metrics::increment_audit_entries();
     }

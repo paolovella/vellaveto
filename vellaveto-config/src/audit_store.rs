@@ -83,8 +83,18 @@ pub struct AuditStoreConfig {
     #[serde(default = "default_connect_timeout_secs")]
     pub connect_timeout_secs: u64,
 
-    /// Whether sink write failures are fatal (deny the request).
-    /// Default false — file log is source of truth, sink failures are logged as warnings.
+    /// Whether a sink write failure is fatal to the audit write.
+    ///
+    /// When true, a failed sink write makes `log_entry` return an error instead
+    /// of succeeding on the strength of the file log alone. It does **not** by
+    /// itself deny the request — whether an audit failure denies is
+    /// [`AuditConfig::strict_mode`](crate::AuditConfig::strict_mode). The two
+    /// compose: this decides what counts as an audit failure, strict mode
+    /// decides what a failure costs. Setting this alone surfaces the error to
+    /// callers, who log it and continue.
+    ///
+    /// Default false — the file log is the source of truth, so sink failures
+    /// are logged as warnings and the entry is still persisted to disk.
     #[serde(default)]
     pub sink_failure_fatal: bool,
 }
