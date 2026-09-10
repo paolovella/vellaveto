@@ -2,13 +2,26 @@
 
 **Version 1.2.0** | **Apache-2.0 License**
 
-MCPSEC is an open, vendor-neutral security benchmark for evaluating MCP (Model Context Protocol) gateway security. It defines 10 formal security properties and 116 reproducible attack test cases across 17 attack classes, derived from real-world penetration testing of MCP deployments. Results are reported on two axes: security, and availability — the share of legitimate traffic allowed through.
+MCPSEC is an open security benchmark for evaluating MCP (Model Context Protocol) gateway security. It defines 10 security properties and 116 reproducible attack test cases across 17 attack classes, drawn from published MCP vulnerabilities, threat-intelligence reporting, and adversarial testing of this project. Results are reported on two axes: security, and availability — the share of legitimate traffic allowed through.
 
-## Why MCPSEC?
+> **Authorship disclosure.** MCPSEC is written and maintained by the Vellaveto
+> project. The benchmark, the pass criteria, and the only currently published
+> result are all ours. The harness is open and reproducible so that anyone can
+> check it, but a score Vellaveto assigns itself is a regression result, not
+> independent validation — and the test selection inevitably reflects the
+> attacks this project chose to think about. Read it that way.
 
-AI agents with tool access are a new attack surface. OWASP defined the ASVS for web apps — MCPSEC does the same for MCP gateways.
+## Why MCPSEC
 
-Most MCP gateways offer tool-level allowlists and nothing more. MCPSEC tests for what actually matters: injection evasion, encoded exfiltration, schema mutation, confused deputy attacks, audit tampering, and more.
+AI agents with tool access are a new attack surface, and the gateways in front of
+them are evaluated mostly by feature list. MCPSEC exists to make claims testable:
+fixed payloads, stated pass criteria, and a per-property breakdown, so "detects
+prompt injection" becomes a number someone else can reproduce.
+
+The properties cover ground a tool-level allowlist does not reach — injection
+evasion, encoded exfiltration, schema mutation, confused deputy attacks, and
+audit tampering — because a permitted tool invoked with a hostile argument is
+the case an allowlist cannot see.
 
 ## Quick Start
 
@@ -86,14 +99,36 @@ See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 
 ## Scoring
 
-| Tier | Score | Meaning |
-|------|-------|---------|
-| Tier 0: Unsafe | 0-19% | No meaningful security |
-| Tier 1: Basic | 20-39% | Allowlist-only |
-| Tier 2: Moderate | 40-59% | Some parameter inspection |
-| Tier 3: Strong | 60-79% | Injection + DLP + audit |
-| Tier 4: Comprehensive | 80-94% | Full threat coverage |
-| Tier 5: Hardened | 95-100% | All properties verified |
+The overall score is a weighted average, so it can hide a property that fails
+entirely. Tiers 4 and 5 add a per-property floor for that reason.
+
+| Tier | Overall | Floor | Meaning |
+|------|---------|-------|---------|
+| Tier 0: Unsafe | 0-19% | — | Almost every test fails |
+| Tier 1: Basic | 20-39% | — | Passes access control and little else |
+| Tier 2: Moderate | 40-59% | — | Some parameter inspection; whole properties likely at zero |
+| Tier 3: Strong | 60-79% | — | Most higher-weighted properties pass; some may be unaddressed |
+| Tier 4: Comprehensive | 80-94% | no property below 70% | Substantial coverage everywhere, none absent |
+| Tier 5: Hardened | 95-100% | no property below 90% | Nearly all tests pass in every property |
+
+A tier reports how a gateway did against these 105 fixed test cases. It does not
+certify that an attack class is solved, and it says nothing about behavior the
+suite does not test. **Always publish the per-property breakdown with the score.**
+
+The tier applies to the **security** axis only, and the bands are deliberately
+unchanged from before the availability axis existed, so old and new security
+scores remain comparable.
+
+### Availability
+
+`availability_score` is reported separately: the percentage of the 11 A17
+legitimate-traffic cases the gateway allowed through. It has no tier.
+
+Read the two together. A gateway that refuses every request scores highly on
+security by construction — 57 of the security tests pass on a denial alone, and
+a measured deny-everything gateway reaches 96/105 (91.3%, Tier 4
+"Comprehensive") while allowing nothing. The security number alone cannot tell
+"secure" from "closed"; the availability number can.
 
 The tier applies to the **security** axis only, and the bands are deliberately
 unchanged from before the availability axis existed, so old and new security
@@ -152,9 +187,10 @@ mcpsec/
 ## Philosophy
 
 1. **Open and reproducible.** Every test case is documented with exact payloads and pass/fail criteria. No black-box scoring.
-2. **Vendor-neutral.** Any MCP gateway can be benchmarked. The harness tests observable behavior, not implementation details.
-3. **Derived from real attacks.** Every test case corresponds to a real attack vector discovered through penetration testing of MCP deployments.
-4. **No security theater.** We test what competitors miss: Unicode homoglyphs, multi-layer encoding, schema mutation, audit chain integrity — not just "does the allowlist work."
+2. **Gateway-agnostic.** The harness tests observable behavior over an HTTP evaluation endpoint, not implementation details, so any MCP gateway can be benchmarked. It is not vendor-neutral in authorship — see the disclosure above.
+3. **Grounded in reported attacks.** Test cases are derived from published MCP vulnerabilities and CVEs, threat-intelligence reporting, and adversarial testing of this project. Each attack class in [ATTACKS.md](ATTACKS.md) cites its source where one exists.
+4. **Tests beyond the allowlist.** Unicode homoglyphs, multi-layer encoding, schema mutation, and audit chain integrity are all in scope, because "does the allowlist work" is not the interesting question.
+5. **Known gaps.** The suite has no attack class for protocol replay, and no class mapped to OWASP ASI07. A high score does not speak to either.
 
 ## Contributing
 

@@ -6015,6 +6015,7 @@ dependencies = [
  "vellaveto-canonical",
  "vellaveto-config",
  "vellaveto-engine",
+ "vellaveto-http-proxy-shield",
  "vellaveto-mcp",
  "vellaveto-tls",
  "vellaveto-types",

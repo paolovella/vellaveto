@@ -1034,7 +1034,11 @@ Vellaveto generates deterministic decentralized identifiers (DID:PLC) for agent 
 
 ### Accountability Attestations
 
-Ed25519-signed accountability attestations provide non-repudiation:
+Ed25519-signed accountability attestations provide tamper detection and
+authorship attribution under a pinned verifying key. They do not establish
+*when* an attestation was made: `created_at` and `expires_at` are read from the
+signing host's clock with no external anchor
+(see [Signing and timestamps](SECURITY_MODEL.md#where-signing-time-comes-from)).
 
 - Length-prefixed content prevents boundary collision attacks
 - Constant-time public key comparison (`subtle::ConstantTimeEq`) prevents timing side-channels

@@ -1416,6 +1416,13 @@ impl ProxyBridge {
             tracing::debug!("Shield context isolation ended for session: {}", session_id);
         }
 
+        // Wipe the session's PII mapping table. Without this the placeholder →
+        // original mappings outlive the session they belong to.
+        if let Some(ref isolator) = self.shield_session_isolator {
+            isolator.end_session(session_id);
+            tracing::debug!("Shield PII session isolation ended for: {}", session_id);
+        }
+
         // End session unlinkability (marks credential consumed)
         if let Some(ref unlinker) = self.shield_session_unlinker {
             let unlinker_guard = unlinker.lock().await;
@@ -1540,6 +1547,90 @@ impl ProxyBridge {
                     "Presented approval consume failed"
                 );
                 Err(())
+            }
+        }
+    }
+
+    /// Sanitize a JSON message, preferring per-session isolation when enabled.
+    ///
+    /// Returns `None` when no shield sanitization is configured, so callers keep
+    /// their existing pass-through branch. The session isolator takes precedence
+    /// over the global sanitizer because the two maintain separate mapping
+    /// tables — running both would desanitize against the wrong one.
+    #[cfg(feature = "consumer-shield")]
+    fn shield_sanitize_json(&self, session_id: &str, msg: &Value) -> Option<Result<Value, String>> {
+        if let Some(ref isolator) = self.shield_session_isolator {
+            return Some(
+                isolator
+                    .sanitize_json_in_session(session_id, msg)
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        self.shield_sanitizer
+            .as_ref()
+            .map(|s| s.sanitize_json(msg).map_err(|e| e.to_string()))
+    }
+
+    /// Restore PII in a JSON message, preferring per-session isolation.
+    ///
+    /// Mirrors [`shield_sanitize_json`]. Under session isolation a placeholder
+    /// minted by another session is not in this session's table and passes
+    /// through unchanged rather than being restored — the isolation guarantee.
+    ///
+    /// [`shield_sanitize_json`]: Self::shield_sanitize_json
+    #[cfg(feature = "consumer-shield")]
+    fn shield_desanitize_json(
+        &self,
+        session_id: &str,
+        msg: &Value,
+    ) -> Option<Result<Value, String>> {
+        if let Some(ref isolator) = self.shield_session_isolator {
+            return Some(
+                isolator
+                    .desanitize_json_in_session(session_id, msg)
+                    .map_err(|e| e.to_string()),
+            );
+        }
+        self.shield_sanitizer
+            .as_ref()
+            .map(|s| s.desanitize_json(msg).map_err(|e| e.to_string()))
+    }
+
+    /// Append one intercepted message to the encrypted local audit store.
+    ///
+    /// Returns `Ok(())` when the entry was written, the store is not
+    /// configured, or the write failed in non-strict mode. Returns `Err(reason)`
+    /// only when the write failed *and* `shield_audit_strict` is set, in which
+    /// case the caller must block the request — an audit gap is the failure the
+    /// strict mode exists to prevent.
+    ///
+    /// Records the message as presented, before PII sanitization, so the local
+    /// history shows what the user actually wrote rather than placeholders. The
+    /// store is encrypted on the user's own machine, which is what makes that
+    /// safe — and what makes it useful for showing what was stripped.
+    #[cfg(feature = "consumer-shield")]
+    async fn record_shield_audit(&self, event_type: &str, msg: &Value) -> Result<(), String> {
+        let Some(ref audit) = self.shield_audit else {
+            return Ok(());
+        };
+        // Serialization of an already-parsed Value cannot realistically fail;
+        // fall back to a marker rather than dropping the entry entirely.
+        let details =
+            serde_json::to_string(msg).unwrap_or_else(|_| "<unserializable message>".to_string());
+        let mut guard = audit.lock().await;
+        match guard.log_shield_event(event_type, &details).await {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "Shield encrypted audit write failed ({}): {}",
+                    event_type,
+                    e
+                );
+                if self.shield_audit_strict {
+                    Err(format!("encrypted audit write failed: {e}"))
+                } else {
+                    Ok(())
+                }
             }
         }
     }
@@ -3377,12 +3468,29 @@ impl ProxyBridge {
                     }
                 }
 
+                // Consumer shield: append to the encrypted local audit store,
+                // also before sanitization so the user's own history is readable.
+                #[cfg(feature = "consumer-shield")]
+                if let Err(reason) = self.record_shield_audit("request", &msg).await {
+                    let error_response = make_denial_response(
+                        &id,
+                        "Shield encrypted audit write failed — request blocked (audit strict mode)",
+                    );
+                    write_message(agent_writer, &error_response)
+                        .await
+                        .map_err(ProxyError::Framing)?;
+                    tracing::error!("Shield audit strict mode blocked request: {}", reason);
+                    return Ok(());
+                }
+
                 // Consumer shield: sanitize outbound request parameters
                 // SECURITY: Fail-closed — if sanitization fails, PII must not leak to provider.
                 #[cfg(feature = "consumer-shield")]
                 #[allow(unused_mut)]
-                let mut msg = if let Some(ref sanitizer) = self.shield_sanitizer {
-                    match sanitizer.sanitize_json(&msg) {
+                let mut msg = if let Some(sanitize_result) =
+                    self.shield_sanitize_json(state.agent_id.as_deref().unwrap_or("default"), &msg)
+                {
+                    match sanitize_result {
                         Ok(sanitized) => sanitized,
                         Err(e) => {
                             tracing::error!(
@@ -4401,8 +4509,10 @@ impl ProxyBridge {
             ProxyDecision::Forward => {
                 // SECURITY (R233-SHIELD-2): PII sanitization for resource reads.
                 #[cfg(feature = "consumer-shield")]
-                let msg = if let Some(ref sanitizer) = self.shield_sanitizer {
-                    match sanitizer.sanitize_json(&msg) {
+                let msg = if let Some(sanitize_result) =
+                    self.shield_sanitize_json(state.agent_id.as_deref().unwrap_or("default"), &msg)
+                {
+                    match sanitize_result {
                         Ok(sanitized) => sanitized,
                         Err(e) => {
                             tracing::error!(
@@ -8237,8 +8347,10 @@ impl ProxyBridge {
         #[cfg(feature = "consumer-shield")]
         let sanitized_msg;
         #[cfg(feature = "consumer-shield")]
-        let msg = if let Some(ref sanitizer) = self.shield_sanitizer {
-            match sanitizer.sanitize_json(msg) {
+        let msg = if let Some(sanitize_result) =
+            self.shield_sanitize_json(state.agent_id.as_deref().unwrap_or("default"), msg)
+        {
+            match sanitize_result {
                 Ok(s) => {
                     sanitized_msg = s;
                     &sanitized_msg
@@ -8616,10 +8728,14 @@ impl ProxyBridge {
 
         // Consumer shield: desanitize inbound response content
         #[cfg(feature = "consumer-shield")]
-        if self.shield_desanitize_responses {
-            if let Some(ref sanitizer) = self.shield_sanitizer {
-                if msg.get("result").is_some() || msg.get("error").is_some() {
-                    match sanitizer.desanitize_json(&msg) {
+        if self.shield_desanitize_responses
+            && (msg.get("result").is_some() || msg.get("error").is_some())
+        {
+            {
+                if let Some(desanitize_result) = self
+                    .shield_desanitize_json(state.agent_id.as_deref().unwrap_or("default"), &msg)
+                {
+                    match desanitize_result {
                         Ok(desanitized) => msg = desanitized,
                         Err(e) => {
                             // SECURITY (R234-SHIELD-6): Fail-closed on desanitization
@@ -8690,6 +8806,24 @@ impl ProxyBridge {
             if let Err(e) = isolator.record_json_response(session_id, &msg) {
                 tracing::debug!("Shield context record (inbound) failed: {}", e);
             }
+        }
+
+        // Consumer shield: append the response to the encrypted local audit store.
+        // In strict mode an unauditable response is not delivered — the agent gets
+        // an explicit error rather than content that left no record, and rather
+        // than a silent drop that would hang the caller.
+        #[cfg(feature = "consumer-shield")]
+        if let Err(reason) = self.record_shield_audit("response", &msg).await {
+            tracing::error!("Shield audit strict mode blocked response: {}", reason);
+            let denial_id = msg.get("id").cloned().unwrap_or(Value::Null);
+            let error_response = make_denial_response(
+                &denial_id,
+                "Shield encrypted audit write failed — response withheld (audit strict mode)",
+            );
+            write_message(agent_writer, &error_response)
+                .await
+                .map_err(ProxyError::Framing)?;
+            return Ok(());
         }
 
         // Remove from pending requests on response
@@ -11079,6 +11213,240 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().as_deref(), Some(approval_id.as_str()));
+    }
+
+    /// Build a bridge with an encrypted shield audit store rooted in `dir`.
+    #[cfg(feature = "consumer-shield")]
+    fn bridge_with_shield_audit(
+        dir: &std::path::Path,
+        strict: bool,
+    ) -> (
+        ProxyBridge,
+        Arc<tokio::sync::Mutex<vellaveto_mcp_shield::LocalAuditManager>>,
+    ) {
+        let audit = Arc::new(vellaveto_audit::AuditLogger::new(dir.join("audit.log")));
+        let store = vellaveto_mcp_shield::EncryptedAuditStore::new(
+            dir.join("shield-audit.enc"),
+            "test-passphrase-not-a-secret",
+        )
+        .expect("encrypted store");
+        let manager = Arc::new(tokio::sync::Mutex::new(
+            vellaveto_mcp_shield::LocalAuditManager::new(dir.join("audit.log"), store)
+                .with_merkle(),
+        ));
+        let bridge = ProxyBridge::new(PolicyEngine::new(false), vec![], audit)
+            .with_shield_audit(Arc::clone(&manager))
+            .with_shield_audit_strict(strict);
+        (bridge, manager)
+    }
+
+    /// Session isolation is structural, not deployment-dependent: a placeholder
+    /// minted in one session is meaningless in another, so it passes through
+    /// unchanged rather than being restored. With the process-global sanitizer
+    /// the same placeholder would resolve in either session.
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_session_isolator_does_not_restore_across_sessions() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(vellaveto_audit::AuditLogger::new(
+            dir.path().join("audit.log"),
+        ));
+        let isolator = Arc::new(vellaveto_mcp_shield::SessionIsolator::new());
+        let bridge = ProxyBridge::new(PolicyEngine::new(false), vec![], audit)
+            .with_session_isolator(Arc::clone(&isolator));
+
+        // Session A sanitizes an email, producing a placeholder only A knows.
+        let sanitized_a = bridge
+            .shield_sanitize_json("session-a", &json!({"q": "mail alice@example.com"}))
+            .expect("shield configured")
+            .expect("sanitize ok");
+        let text_a = sanitized_a["q"].as_str().unwrap().to_string();
+        assert!(
+            text_a.contains("[PII_EMAIL_"),
+            "email should have been replaced, got {text_a}"
+        );
+        assert!(!text_a.contains("alice@example.com"));
+
+        // Session B holds A's placeholder. It must not resolve there.
+        let cross = bridge
+            .shield_desanitize_json("session-b", &json!({"echo": text_a.clone()}))
+            .expect("shield configured");
+        // Either B has no such session/mapping and passes it through unchanged,
+        // or it refuses outright. Both are acceptable; leaking the original
+        // address is not.
+        if let Ok(v) = cross {
+            assert!(
+                !v["echo"].as_str().unwrap().contains("alice@example.com"),
+                "session B must not restore session A's PII"
+            );
+        }
+
+        // A itself still restores its own placeholder — isolation must not
+        // break the feature it is isolating.
+        let restored = bridge
+            .shield_desanitize_json("session-a", &json!({"echo": text_a}))
+            .expect("shield configured")
+            .expect("desanitize ok");
+        assert!(
+            restored["echo"]
+                .as_str()
+                .unwrap()
+                .contains("alice@example.com"),
+            "session A must restore its own PII"
+        );
+    }
+
+    /// Ending a session wipes its mapping table, so a placeholder cannot be
+    /// resolved after the session it belongs to has gone.
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_session_isolator_end_session_wipes_mappings() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(vellaveto_audit::AuditLogger::new(
+            dir.path().join("audit.log"),
+        ));
+        let isolator = Arc::new(vellaveto_mcp_shield::SessionIsolator::new());
+        let bridge = ProxyBridge::new(PolicyEngine::new(false), vec![], audit)
+            .with_session_isolator(Arc::clone(&isolator));
+
+        let sanitized = bridge
+            .shield_sanitize_json("s1", &json!({"q": "mail bob@example.com"}))
+            .unwrap()
+            .unwrap();
+        let text = sanitized["q"].as_str().unwrap().to_string();
+
+        isolator.end_session("s1");
+
+        let after = bridge.shield_desanitize_json("s1", &json!({"echo": text}));
+        if let Ok(v) = after.expect("shield configured") {
+            assert!(
+                !v["echo"].as_str().unwrap().contains("bob@example.com"),
+                "mappings must not survive end_session"
+            );
+        }
+    }
+
+    /// The global sanitizer remains the path when session isolation is off, so
+    /// existing deployments are unaffected.
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_global_sanitizer_used_when_no_isolator() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(vellaveto_audit::AuditLogger::new(
+            dir.path().join("audit.log"),
+        ));
+        let sanitizer = Arc::new(vellaveto_mcp_shield::QuerySanitizer::new(
+            vellaveto_audit::PiiScanner::new(&[]),
+        ));
+        let bridge = ProxyBridge::new(PolicyEngine::new(false), vec![], audit)
+            .with_shield_sanitizer(sanitizer);
+
+        let sanitized = bridge
+            .shield_sanitize_json("anything", &json!({"q": "mail carol@example.com"}))
+            .unwrap()
+            .unwrap();
+        assert!(sanitized["q"].as_str().unwrap().contains("[PII_EMAIL_"));
+
+        // No shield configured at all -> None, so callers pass through.
+        let audit2 = Arc::new(vellaveto_audit::AuditLogger::new(
+            dir.path().join("audit2.log"),
+        ));
+        let bare = ProxyBridge::new(PolicyEngine::new(false), vec![], audit2);
+        assert!(bare
+            .shield_sanitize_json("x", &json!({"q": "a@b.co"}))
+            .is_none());
+    }
+
+    /// The finding this wiring exists to close: before it, `LocalAuditManager`
+    /// was constructed and never called, so the encrypted store stayed empty
+    /// while the shield logged "Encrypted audit store: ENABLED".
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_shield_audit_records_requests_and_responses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bridge, manager) = bridge_with_shield_audit(dir.path(), false);
+
+        assert!(
+            manager.lock().await.read_entries().unwrap().is_empty(),
+            "store should start empty"
+        );
+
+        bridge
+            .record_shield_audit("request", &json!({"method": "tools/call", "id": 1}))
+            .await
+            .expect("request write");
+        bridge
+            .record_shield_audit("response", &json!({"result": "ok", "id": 1}))
+            .await
+            .expect("response write");
+
+        let entries = manager.lock().await.read_entries().unwrap();
+        assert_eq!(entries.len(), 2, "both directions must be recorded");
+        assert_eq!(
+            entries[0].get("event").and_then(|e| e.as_str()),
+            Some("request")
+        );
+        assert_eq!(
+            entries[1].get("event").and_then(|e| e.as_str()),
+            Some("response")
+        );
+        // The message content itself must be recoverable, not just the event type.
+        assert!(
+            entries[0]
+                .get("details")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| d.contains("tools/call")),
+            "entry must carry the intercepted message"
+        );
+    }
+
+    /// Merkle chaining advances as entries are appended, so the local history
+    /// is tamper-evident rather than merely encrypted.
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_shield_audit_merkle_root_advances() {
+        let dir = tempfile::tempdir().unwrap();
+        let (bridge, manager) = bridge_with_shield_audit(dir.path(), false);
+
+        bridge
+            .record_shield_audit("request", &json!({"id": 1}))
+            .await
+            .unwrap();
+        let first = manager.lock().await.merkle_root();
+        assert!(
+            first.is_some(),
+            "merkle root should exist after first entry"
+        );
+
+        bridge
+            .record_shield_audit("request", &json!({"id": 2}))
+            .await
+            .unwrap();
+        let second = manager.lock().await.merkle_root();
+        assert_ne!(
+            first, second,
+            "merkle root must change as entries are added"
+        );
+    }
+
+    /// With no store configured the hook is a no-op and never blocks — the
+    /// shield must work with the encrypted store turned off.
+    #[cfg(feature = "consumer-shield")]
+    #[tokio::test]
+    async fn test_shield_audit_absent_store_is_noop() {
+        let dir = tempfile::tempdir().unwrap();
+        let audit = Arc::new(vellaveto_audit::AuditLogger::new(
+            dir.path().join("audit.log"),
+        ));
+        let bridge = ProxyBridge::new(PolicyEngine::new(false), vec![], audit)
+            .with_shield_audit_strict(true);
+        assert!(
+            bridge
+                .record_shield_audit("request", &json!({"id": 1}))
+                .await
+                .is_ok(),
+            "strict mode must not block when no store is configured"
+        );
     }
 
     /// SECURITY (R246-RELAY-2): Approval created with requested_by tracks identity,

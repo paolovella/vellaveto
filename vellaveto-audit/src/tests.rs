@@ -2013,6 +2013,94 @@ async fn test_checkpoint_legacy_v1_signature_still_verifies() {
     assert_eq!(verification.checkpoints_checked, 1);
 }
 
+/// SECURITY (DOC-CRED-2): Checkpoints signed before domain separation must keep
+/// verifying, or introducing the domain tag would invalidate every existing
+/// audit chain.
+#[tokio::test]
+async fn test_checkpoint_undomained_signature_still_verifies() {
+    let dir = TempDir::new().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let key = AuditLogger::generate_signing_key();
+    let logger = AuditLogger::new(log_path.clone()).with_signing_key(key.clone());
+
+    let action = test_action();
+    logger
+        .log_entry(&action, &Verdict::Allow, json!({}))
+        .await
+        .unwrap();
+
+    let entries = logger.load_entries().await.unwrap();
+    let mut checkpoint = Checkpoint {
+        id: uuid::Uuid::new_v4().to_string(),
+        timestamp: chrono::Utc::now().to_rfc3339(),
+        entry_count: entries.len(),
+        chain_head_hash: entries.last().and_then(|e| e.entry_hash.clone()),
+        signature: String::new(),
+        verifying_key: hex::encode(key.verifying_key().as_bytes()),
+        merkle_root: None,
+        pqc_signature: None,
+        pqc_verifying_key: None,
+        signature_version: Some(1),
+    };
+    // Sign with the pre-domain-separation content, as an existing chain would.
+    let old_sig = key.sign(&checkpoint.undomained_signing_content());
+    checkpoint.signature = hex::encode(old_sig.to_bytes());
+
+    let cp_path = logger.checkpoint_path();
+    let serialized = format!("{}\n", serde_json::to_string(&checkpoint).unwrap());
+    tokio::fs::write(&cp_path, serialized).await.unwrap();
+
+    let verification = logger.verify_checkpoints().await.unwrap();
+    assert!(
+        verification.valid,
+        "checkpoints signed before domain separation must still verify"
+    );
+}
+
+/// SECURITY (DOC-CRED-2): The property the change exists for. A signature made
+/// over an evidence pack's digest must not verify as a checkpoint, even when
+/// the same key signed both and the underlying field data is identical.
+///
+/// Before domain separation both digests were bare SHA-256 over length-prefixed
+/// fields, so nothing in the signed bytes said which artifact type they came
+/// from.
+#[test]
+fn test_signature_does_not_transfer_between_artifact_domains() {
+    use ed25519_dalek::Signer;
+    use sha2::Digest;
+    use vellaveto_types::signing_domain::{
+        domain_separated_hasher, hash_field, DOMAIN_CHECKPOINT, DOMAIN_EVIDENCE_PACK,
+    };
+
+    let key = AuditLogger::generate_signing_key();
+    let fields: &[&[u8]] = &[b"same", b"field", b"data"];
+
+    let digest_under = |domain| {
+        let mut h = domain_separated_hasher(domain);
+        for f in fields {
+            hash_field(&mut h, f);
+        }
+        h.finalize().to_vec()
+    };
+
+    let checkpoint_digest = digest_under(DOMAIN_CHECKPOINT);
+    let evidence_digest = digest_under(DOMAIN_EVIDENCE_PACK);
+
+    // A signature legitimately made over the evidence-pack digest...
+    let evidence_sig = key.sign(&evidence_digest);
+    let vk = key.verifying_key();
+
+    assert!(
+        vk.verify_strict(&evidence_digest, &evidence_sig).is_ok(),
+        "signature must verify against the digest it was made over"
+    );
+    // ...must not verify as a checkpoint, despite identical field data.
+    assert!(
+        vk.verify_strict(&checkpoint_digest, &evidence_sig).is_err(),
+        "a signature over one artifact domain must not verify under another"
+    );
+}
+
 #[tokio::test]
 async fn test_checkpoint_key_from_bytes_roundtrip() {
     let key = AuditLogger::generate_signing_key();

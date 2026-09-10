@@ -18,6 +18,24 @@ VellaVeto maps its runtime security controls to 12 regulatory and industry frame
 
 These are **control mappings**, not certifications. VellaVeto provides the technical controls and evidence artifacts — compliance validation remains deployment-specific and requires assessment by qualified auditors.
 
+### Two limits that affect evidence value
+
+**Signed artifacts are not time-attested.** Checkpoints, rotation manifests, and
+evidence packs are dated from the signing host's wall clock. There is no RFC 3161
+timestamp authority and no external anchor, so a signature establishes authorship
+and integrity but not *when* the artifact was produced — and the key holder can
+assign any timestamp. Where a regime requires attested record-keeping times,
+supply that attestation externally: forward entries to an append-only external
+system (SIEM, WORM storage, or a notarization service) whose timestamps are
+outside the operator's control. See
+[Signing and timestamps](SECURITY_MODEL.md#where-signing-time-comes-from).
+
+**Ed25519 is not FIPS 140-3 approved.** It is the default signing algorithm and
+Vellaveto's own FIPS controller rejects it. Deployments under a FIPS obligation
+must set `fips.enabled = true` and `fips.signature_algorithm = "ecdsa-p256"`
+(the only value accepted in FIPS mode), and must not present Ed25519-signed
+checkpoints as compliance evidence.
+
 ---
 
 ## Framework Summary
@@ -51,7 +69,7 @@ VellaVeto provides controls mapped to five articles:
 |---------|-------------|-------------------|
 | Art 50(2) | Transparency: mark AI-generated output | `VerdictExplanation` with configurable verbosity injected into `_meta` |
 | Art 10 | Data governance for training/validation | `DataGovernanceRecord` with classification, purpose, provenance, retention |
-| Art 12 | Record-keeping and traceability | Tamper-evident audit: SHA-256 chains, Merkle proofs, Ed25519+ML-DSA-65 checkpoints, ACIS decision envelopes with per-verdict fingerprints |
+| Art 12 | Record-keeping and traceability | Tamper-evident audit: SHA-256 chains, Merkle proofs, signed checkpoints (Ed25519, optionally hybrid Ed25519+ML-DSA-65), ACIS decision envelopes with per-verdict fingerprints |
 | Art 14 | Human oversight | `RequireApproval` verdict, human-in-the-loop workflow with configurable timeout |
 | Art 9 | Risk management system | Policy engine with risk scoring, ABAC, behavioral anomaly detection, circuit breakers |
 

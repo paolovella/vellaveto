@@ -7,13 +7,32 @@
 
 //! Context window isolation — prevents cross-session context leakage.
 //!
-//! Each session starts with a clean context. If the user wants continuity,
-//! the Shield provides it locally: relevant context from LOCAL history is
-//! injected into the new session's prompt. The provider sees a fresh user
-//! every session.
+//! Each session's recorded context is kept separate: entries recorded under one
+//! session id are never returned for another, and [`end_session`] wipes a
+//! session's entries entirely. That isolation is what this module provides, and
+//! it is enforced by the proxy bridge, which records every intercepted request
+//! and response against the current session.
 //!
-//! Local context is stored using the encrypted audit store and is never
-//! sent to the provider in linkable form.
+//! # No prompt injection — deliberately
+//!
+//! An earlier version of this documentation said local context was "injected
+//! into the new session's prompt" to give the user continuity. It never was,
+//! and it should not be. A stdio MCP proxy does not sit on the path between the
+//! agent and the model, so the only message crossing it that carries a prompt
+//! is a server-initiated `sampling/createMessage`. Injecting local history
+//! there would hand it to whichever MCP server asked: the agent runs the
+//! sampling request against the model and returns the completion **to that
+//! server**, so a malicious server could harvest the user's history by
+//! requesting sampling and reading what came back. DLP scanning on the return
+//! path catches patterned secrets, not general private content.
+//!
+//! [`get_recent_context`] therefore exists as a **local read API**: a host
+//! application that wants to offer continuity can read a session's own history
+//! and decide what to do with it, under the user's control. This module will
+//! not put that history on the wire.
+//!
+//! [`end_session`]: ContextIsolator::end_session
+//! [`get_recent_context`]: ContextIsolator::get_recent_context
 
 use crate::error::ShieldError;
 use std::collections::{HashMap, VecDeque};

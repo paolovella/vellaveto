@@ -12,7 +12,7 @@ A test **passes** when the gateway correctly detects or blocks the attack. A tes
 
 **OWASP Reference:** ASI01 — Prompt Injection
 **Properties Tested:** P4 (Injection Resistance), P9 (Unicode Normalization)
-**What Competitors Miss:** Unicode homoglyphs, NFKC normalization, zero-width chars, bidi overrides, ChatML/Llama delimiters, ROT13, HTML entities, Policy Puppetry, FlipAttack reversal, leetspeak, math symbols, emoji smuggling
+**What this class tests:** Unicode homoglyphs, NFKC normalization, zero-width chars, bidi overrides, ChatML/Llama delimiters, ROT13, HTML entities, Policy Puppetry, FlipAttack reversal, leetspeak, math symbols, emoji smuggling
 
 ### A1.1: Classic Injection Phrase
 
@@ -120,7 +120,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI03 — Tool Poisoning
 **Properties Tested:** P5 (Schema Integrity)
-**What Competitors Miss:** Schema mutation detection, annotation drift, tool addition/removal, description injection
+**What this class tests:** Schema mutation detection, annotation drift, tool addition/removal, description injection
 
 ### A2.1: Annotation Change Detection
 
@@ -173,7 +173,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI01
 **Properties Tested:** P1 (Access Control), P2 (Parameter Constraints)
-**What Competitors Miss:** Recursive JSON scanning, nested path traversal, deep parameter injection
+**What this class tests:** Recursive JSON scanning, nested path traversal, deep parameter injection
 
 ### A3.1: Path Traversal via Parameter
 
@@ -220,7 +220,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI04 — Data Exfiltration
 **Properties Tested:** P6 (Response Confidentiality)
-**What Competitors Miss:** Base64, percent-encode, double-base64, mixed-chain (5 layers), hex, JWT detection
+**What this class tests:** Base64, percent-encode, double-base64, mixed-chain (5 layers), hex, JWT detection
 
 ### A4.1: Raw Secret in Response
 
@@ -282,7 +282,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI02 — Confused Deputy / Privilege Escalation
 **Properties Tested:** P1 (Access Control), P3 (Priority), P8 (Delegation)
-**What Competitors Miss:** Delegation chain forgery, privilege escalation via tool chaining, identity spoofing, circular delegation, re-delegation without authority
+**What this class tests:** Delegation chain forgery, privilege escalation via tool chaining, identity spoofing, circular delegation, re-delegation without authority
 
 ### A5.1: Default-Deny Enforcement
 
@@ -350,7 +350,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI06 — Memory Poisoning
 **Properties Tested:** P4 (Injection Resistance), P6 (Response Confidentiality)
-**What Competitors Miss:** Response fingerprint replay, cross-session taint, error message credential laundering
+**What this class tests:** Response fingerprint replay, cross-session taint, error message credential laundering
 
 ### A6.1: URL Exfiltration via Response Replay
 
@@ -388,7 +388,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** ASI03
 **Properties Tested:** P9 (Unicode Normalization), P5 (Schema Integrity)
-**What Competitors Miss:** Levenshtein distance, Cyrillic/Greek homoglyphs, fullwidth Latin, mixed-script
+**What this class tests:** Levenshtein distance, Cyrillic/Greek homoglyphs, fullwidth Latin, mixed-script
 
 ### A7.1: Cyrillic Homoglyph Squatting
 
@@ -426,7 +426,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** MCP08 — Audit & Telemetry Integrity
 **Properties Tested:** P7 (Audit Immutability)
-**What Competitors Miss:** Hash chain integrity, CEF injection, checkpoint signature verification
+**What this class tests:** Hash chain integrity, CEF injection, checkpoint signature verification
 
 ### A8.1: Hash Chain Tamper Detection
 
@@ -476,7 +476,7 @@ Tag characters (U+E0000-U+E007F) inserted to evade detection.
 
 **OWASP Reference:** MCP05 — Command Injection / SSRF
 **Properties Tested:** P2 (Parameter Constraints)
-**What Competitors Miss:** Cloud metadata, userinfo bypass, trailing dot, IPv6, IPv4-mapped IPv6, NAT64, port smuggling
+**What this class tests:** Cloud metadata, userinfo bypass, trailing dot, IPv6, IPv4-mapped IPv6, NAT64, port smuggling
 
 ### A9.1: Cloud Metadata SSRF
 
@@ -536,7 +536,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** MCP10 — Denial of Service
 **Properties Tested:** P10 (Temporal Consistency)
-**What Competitors Miss:** ReDoS, parameter bomb, oversized messages, tracker flood
+**What this class tests:** ReDoS, parameter bomb, oversized messages, tracker flood
 
 ### A10.1: ReDoS Nested Quantifier
 
@@ -568,7 +568,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** N/A (MCP 2025-06-18 elicitation feature)
 **Properties Tested:** P2 (Parameter Constraints), P6 (Response Confidentiality)
-**What Competitors Miss:** Hidden password fields, oneOf schema abuse, additionalProperties secret extraction, conditional schemas, description injection
+**What this class tests:** Hidden password fields, oneOf schema abuse, additionalProperties secret extraction, conditional schemas, description injection
 
 ### A11.1: Password Field Harvest
 
@@ -612,7 +612,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** N/A (MCP 2025-06-18 sampling feature)
 **Properties Tested:** P1 (Access Control), P4 (Injection Resistance)
-**What Competitors Miss:** Sampling exfiltration, resource URI abuse, data URI bypass, system prompt override, path traversal
+**What this class tests:** Sampling exfiltration, resource URI abuse, data URI bypass, system prompt override, path traversal
 
 ### A12.1: Sampling Request Exfiltration
 
@@ -656,7 +656,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** N/A (MCPSEC A13)
 **Properties Tested:** P6 (Response Confidentiality)
-**What Competitors Miss:** Secrets split across multiple tool calls within a session, cross-call DLP state tracking
+**What this class tests:** Secrets split across multiple tool calls within a session, cross-call DLP state tracking
 
 ### A13.1: AWS Key Split Across 2 Calls
 
@@ -688,7 +688,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** N/A (MCPSEC A14)
 **Properties Tested:** P5 (Schema Integrity)
-**What Competitors Miss:** Output schema validation enforcement — additionalProperties, pattern, minLength, enum
+**What this class tests:** Output schema validation enforcement — additionalProperties, pattern, minLength, enum
 
 ### A14.1: Extra Field When additionalProperties: false
 
@@ -720,7 +720,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** ASI02 — Confused Deputy / Privilege Escalation
 **Properties Tested:** P1 (Access Control), P9 (Unicode Normalization)
-**What Competitors Miss:** Agent identity validation, control char injection, homoglyph spoofing of known agents, ABAC context enforcement
+**What this class tests:** Agent identity validation, control char injection, homoglyph spoofing of known agents, ABAC context enforcement
 
 ### A15.1: Unauthenticated Agent Denied by ABAC
 
@@ -758,7 +758,7 @@ NAT64 well-known prefix (RFC 6052) embedding `169.254.169.254` in the lower 32 b
 
 **OWASP Reference:** MCP10 — Denial of Service
 **Properties Tested:** P10 (Temporal Consistency)
-**What Competitors Miss:** Cascading failure protection, counter overflow via saturating arithmetic, recovery state transitions
+**What this class tests:** Cascading failure protection, counter overflow via saturating arithmetic, recovery state transitions
 
 ### A16.1: Circuit Breaker Trips After Repeated Failures
 

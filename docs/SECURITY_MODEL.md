@@ -48,7 +48,24 @@ Each policy decision is written as a JSON Lines entry containing:
 - Optional Ed25519 checkpoint signatures every N entries
 - Optional ACIS decision envelope — structured metadata containing decision ID, SHA-256 action fingerprint, verdict kind, decision origin (PolicyEngine or ApprovalGate), transport label, and session/tenant binding (backward-compatible: `acis_envelope` is `null` for pre-ACIS entries)
 
-**Integrity:** The hash chain provides tamper *detection* (not prevention). An attacker with file-system write access could truncate the log, but this is detected on the next verification pass. Ed25519 checkpoints prevent silent key rotation.
+**Integrity:** The hash chain provides tamper *detection* (not prevention). An attacker with file-system write access could truncate the log, but this is detected on the next verification pass.
+
+**What the chain proves, precisely:** entries form a hash-linked sequence whose
+internal order is verifiable. It does **not** establish absolute times — see
+[Signing and timestamps](#signing-and-timestamps) below. Timestamp monotonicity
+is checked in `verify_chain()` only, as a lexicographic comparison of the
+timestamp strings; nothing is checked when an entry is appended, so a backwards
+host clock jump produces a log that later fails its own verification rather than
+being rejected at write time. Entries with `sequence == 0` are accepted
+unconditionally for backward compatibility and skip the sequence check.
+Tracked as DOC-CRED-3 in [the audit log](AUDIT_LOG.md).
+
+**Checkpoints are opt-in.** They are disabled by default
+([Defaults](DEFAULTS.md)), and if `VELLAVETO_SIGNING_KEY` is unset a fresh key is
+generated per process — which makes checkpoints unverifiable across restarts.
+For the guarantee to mean anything, three things must be configured: enable
+checkpoints, set `VELLAVETO_SIGNING_KEY` to a persistent value, and pin
+`VELLAVETO_TRUSTED_KEY` on the verifying side.
 
 **Rotation:** Logs rotate at 100 MB by default. Each rotated file gets a timestamped name and a manifest entry for chain continuity verification.
 
@@ -72,7 +89,18 @@ Vellaveto applies multi-layer redaction before writing audit logs:
 
 **Sensitive value prefixes** (always redacted): `sk-` (OpenAI/Anthropic), `AKIA` (AWS), `ghp_`/`gho_`/`ghs_` (GitHub), `xoxb-`/`xoxp-` (Slack), `Bearer`/`Basic` (auth headers), `sk_live_` (Stripe), `AIza` (Google), `SG.` (SendGrid), `npm_`, `pypi-`
 
-**PII patterns** (configurable): email addresses, SSNs, phone numbers, credit card numbers (Luhn-validated), JWTs, IPv4 addresses
+**PII patterns** (extensible): the built-in set is exactly seven — email
+addresses, US SSNs, US phone numbers, credit card numbers (Luhn-validated),
+IPv4 addresses, JWTs, and AWS key IDs.
+
+These defaults are **US-centric and deliberately narrow**. Not covered: IBANs,
+NHS numbers, EU/UK national IDs, passport numbers, non-US phone formats, IPv6
+addresses, **filesystem paths**, and **personal names**. Add site-specific
+patterns as `CustomPiiPattern` entries; each is checked by
+`validate_regex_safety()` for ReDoS-prone constructs before being compiled.
+
+The same pattern set backs the Consumer Shield's `QuerySanitizer`, so the
+Shield's sanitization coverage is identical to the list above.
 
 Redaction level is configurable: `Off`, `KeysOnly`, `KeysAndPatterns` (default), `High`.
 
@@ -90,6 +118,104 @@ Redaction level is configurable: `Off`, `KeysOnly`, `KeysAndPatterns` (default),
 | DLP scan intermediate results | Per-request | Only the verdict is logged, not matched content |
 | Raw JWT payload | Per-request | Only extracted claims (issuer, subject, audience) are logged |
 | Circuit breaker state | Process lifetime | Open/HalfOpen/Closed per policy |
+
+---
+
+## Signing and Timestamps
+
+### Why Ed25519
+
+Ed25519 (RFC 8032) signs audit checkpoints, rotation manifests, evidence packs,
+capability tokens, accountability attestations, ETDI tool signatures, A2A agent
+cards, and warrant canaries. The reasons, in order of weight:
+
+1. **Deterministic nonce derivation.** The per-signature secret is derived from
+   the private key and the message rather than sampled from an RNG. ECDSA and
+   DSA disclose the private key outright when the per-signature nonce repeats or
+   is biased — the failure that broke the PS3 code-signing key and drained
+   Bitcoin wallets on a faulty Android RNG. Vellaveto's signer runs unattended on
+   operator-chosen hardware, including VMs that are snapshotted and forked, where
+   RNG state can genuinely repeat. Taking the RNG out of the signing path removes
+   that entire failure class. This is the deciding reason.
+2. **Fixed, small artifacts.** 32-byte public keys and 64-byte signatures.
+   Checkpoints are emitted every N entries and evidence packs are shipped to
+   auditors, so per-signature overhead is a recurring cost.
+3. **Fast verification, and batch verification is available** — verifying a long
+   chain of checkpoints is a bulk operation.
+4. **An audited implementation.** `ed25519-dalek` has a published third-party
+   audit (Quarkslab, 2023). See [Trusted Computing Base](TRUSTED_COMPUTING_BASE.md).
+
+**The trade-offs, stated plainly:**
+
+- **Ed25519 is not FIPS 140-3 approved**, and Vellaveto's own `FipsMode`
+  rejection list names it. Operators under a FIPS obligation must select the
+  approved signing path (ECDSA P-256) and must not rely on Ed25519 checkpoints
+  as compliance evidence. See [Compliance](COMPLIANCE.md).
+- **Ed25519 is not post-quantum.** The `pqc-hybrid` feature adds ML-DSA-65
+  (FIPS 204) alongside Ed25519, but only for **checkpoints and rotation
+  manifests** — not evidence packs, canaries, agent cards, or capability tokens.
+  The feature is not enabled by default.
+- **There is no domain separation on the Ed25519 payloads.** Every one is a bare
+  32-byte SHA-256 digest with no context prefix, so a checkpoint digest and an
+  evidence-pack digest are indistinguishable to a verifier. The
+  `CHECKPOINT_CONTEXT` / `MANIFEST_CONTEXT` separators apply to the ML-DSA half
+  of the hybrid only. **Operator rule: never reuse one key seed across
+  `VELLAVETO_SIGNING_KEY`, `create_canary`, `issue_capability_token`,
+  `EtdiSigner`, and `sign_evidence_pack`.** Distinct artifact types must use
+  distinct keys. Tracked as DOC-CRED-2 in [the audit log](AUDIT_LOG.md).
+
+### Where signing time comes from
+
+All timestamps in signed artifacts are read from the **signing host's wall
+clock** (`chrono::Utc::now()`). Vellaveto does not use an RFC 3161 timestamp
+authority, Roughtime, or any other external time anchor, and does not
+cross-anchor signatures to a transparency log.
+
+A valid signature therefore attests **that this content was signed by this key**.
+It does **not** attest **when**. An operator holding the signing key can assign
+any timestamp to any artifact, and nothing in the verification path can detect
+it. Chain monotonicity constrains the *ordering* of audit entries relative to
+each other; it does not constrain their absolute values.
+
+This bounds what the signatures can be used for:
+
+| Claim | Holds? |
+|---|---|
+| This artifact was produced by the holder of key *K* | Yes, against an out-of-band pinned *K* |
+| This artifact has not been modified since signing | Yes |
+| These audit entries are in the order they were written | Yes, if verification passes |
+| This artifact existed at the time it states | **No** |
+| The key holder cannot repudiate the stated time | **No** |
+
+Accordingly, "non-repudiation" in this project means **tamper detection and
+authorship attribution under a pinned key** — not proof of time, and not a
+guarantee against the key holder.
+
+### Warrant canary
+
+The canary is an Ed25519-signed statement with a self-asserted `signed_date` and
+`expires_date`. Three limits determine what it can be used for:
+
+1. **`verify_canary()` does not authenticate the signer.** It verifies the
+   signature against the verifying key carried *inside the canary*, so
+   `signature_valid: true` means only that the canary is internally consistent.
+   Anyone can generate a keypair and sign an arbitrary statement. A canary is
+   meaningful only when checked against a publisher key obtained out of band.
+2. **The date is self-asserted.** `signed_date` is the signer's own clock at day
+   granularity, with no external anchor, so it can be back- or forward-dated.
+3. **Issuance is not shipped.** `create_canary()` has no caller outside its own
+   tests — there is no CLI, no route, no publication workflow, and no published
+   cadence. Vellaveto can verify a canary; it does not yet issue one.
+
+The fix for (2) is not a timestamp authority. The standard warrant-canary
+construction is an **external unpredictable anchor**: the statement quotes a
+recent public value that could not have been known earlier — a news headline, or
+a recent Bitcoin block hash. That proves the canary was signed *no earlier than*
+the anchor existed; a published renewal cadence bounds it from the other side.
+Both are required, because a canary's signal is the **absence** of a renewal, and
+without a stated period silence cannot be read.
+
+Tracked as DOC-CRED-4 in [the audit log](AUDIT_LOG.md).
 
 ---
 

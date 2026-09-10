@@ -25,6 +25,23 @@ pub(crate) const DEFAULT_MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
 const MAX_ROTATED_FILES: usize = 100;
 
 impl AuditLogger {
+    /// Digest of a rotation manifest entry's canonical JSON.
+    ///
+    /// SECURITY (DOC-CRED-2): Bound to the rotation-manifest domain so the
+    /// signature cannot be presented as one over another artifact type. Pass
+    /// `false` only when verifying manifests written before this change.
+    fn manifest_digest(canonical: &[u8], domain_separated: bool) -> Vec<u8> {
+        let mut hasher = if domain_separated {
+            vellaveto_types::signing_domain::domain_separated_hasher(
+                vellaveto_types::signing_domain::DOMAIN_ROTATION_MANIFEST,
+            )
+        } else {
+            Sha256::new()
+        };
+        hasher.update(canonical);
+        hasher.finalize().to_vec()
+    }
+
     /// Initialize the hash chain by reading the last entry from the log.
     ///
     /// Call this once at startup to seed the chain head.
@@ -363,9 +380,10 @@ impl AuditLogger {
         // Previously, PQC signed after Ed25519 fields were added, but verification
         // strips all signature fields — causing a message mismatch.
         let unsigned_canonical = Self::canonical_json(&manifest_entry)?;
-        let mut base_hasher = Sha256::new();
-        base_hasher.update(&unsigned_canonical);
-        let unsigned_digest = base_hasher.finalize();
+        // SECURITY (DOC-CRED-2): Bind the digest to the rotation-manifest domain
+        // so this signature cannot be presented as one over another artifact
+        // type signed by the same key.
+        let unsigned_digest = Self::manifest_digest(&unsigned_canonical, true);
 
         if let Some(signing_key) = &self.signing_key {
             let signature = signing_key.sign(&unsigned_digest);
@@ -598,9 +616,11 @@ impl AuditLogger {
                         });
                     }
                 };
-                let mut hasher = Sha256::new();
-                hasher.update(&canonical);
-                let digest = hasher.finalize();
+                // SECURITY (DOC-CRED-2): Domain-separated digest, with the
+                // pre-domain-separation form tried below for manifests written
+                // before the change.
+                let digest = Self::manifest_digest(&canonical, true);
+                let undomained_digest = Self::manifest_digest(&canonical, false);
                 let vk_arr: [u8; 32] = match vk_bytes.as_slice().try_into() {
                     Ok(a) => a,
                     Err(_) => {
@@ -638,7 +658,8 @@ impl AuditLogger {
                     }
                 };
                 let sig = ed25519_dalek::Signature::from_bytes(&sig_arr);
-                if vk.verify(&digest, &sig).is_err() {
+                if vk.verify(&digest, &sig).is_err() && vk.verify(&undomained_digest, &sig).is_err()
+                {
                     return Ok(RotationVerification {
                         valid: false,
                         files_checked: i,

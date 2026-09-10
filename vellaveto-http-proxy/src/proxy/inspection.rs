@@ -870,6 +870,10 @@ pub(super) fn register_schemas_from_sse(sse_bytes: &[u8], state: &ProxyState) {
             state
                 .output_schema_registry
                 .register_from_tools_list(&json_val);
+
+            // Transport parity: feed discovery the same tools/list the schema
+            // registry just consumed (stdio relay does this in relay.rs).
+            super::helpers::ingest_tools_for_discovery(state, &json_val);
         }
     }
 }

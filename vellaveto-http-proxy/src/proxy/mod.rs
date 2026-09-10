@@ -118,6 +118,18 @@ pub struct ProxyState {
     pub sessions: Arc<SessionStore>,
     pub upstream_url: String,
     pub http_client: reqwest::Client,
+    /// When true, responses may be padded to fixed size buckets — but only for
+    /// clients that explicitly negotiate it. A padded body is not valid JSON, so
+    /// a client that did not ask always gets the unpadded body.
+    pub traffic_padding: bool,
+
+    /// When true, correlation and tracing headers are not propagated upstream.
+    ///
+    /// `traceparent`, `tracestate`, and the `x-*-trace-id` family let an
+    /// upstream operator link a user's requests across sessions, which is
+    /// exactly what the Consumer Shield exists to prevent. Off by default
+    /// because stripping them also breaks distributed tracing through the proxy.
+    pub strip_privacy_headers: bool,
     /// OAuth 2.1 JWT validator. When `Some`, all MCP requests require a valid Bearer token.
     pub oauth: Option<Arc<OAuthValidator>>,
     /// Custom injection scanner. When `Some`, uses configured patterns instead of defaults.

@@ -88,6 +88,22 @@ pub enum AttestationError {
 /// ```text
 /// <attestation_id_len>:<attestation_id><agent_id_len>:<agent_id><did_len>:<did><statement_len>:<statement><policy_hash_len>:<policy_hash><created_at_len>:<created_at><expires_at_len>:<expires_at>
 /// ```
+/// Digest of an attestation's canonical content, bound to the accountability domain.
+///
+/// SECURITY (DOC-CRED-2): See `vellaveto_types::signing_domain`. `domain_separated`
+/// is false only when verifying attestations issued before this change.
+fn content_digest(canonical: &str, domain_separated: bool) -> Vec<u8> {
+    let mut hasher = if domain_separated {
+        vellaveto_types::signing_domain::domain_separated_hasher(
+            vellaveto_types::signing_domain::DOMAIN_ACCOUNTABILITY,
+        )
+    } else {
+        Sha256::new()
+    };
+    hasher.update(canonical.as_bytes());
+    hasher.finalize().to_vec()
+}
+
 pub fn sign_attestation(
     agent_id: &str,
     did: Option<&str>,
@@ -199,12 +215,8 @@ pub fn sign_attestation(
         &expires_at,
     );
 
-    // SHA-256 hash the canonical content
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    let content_hash = hasher.finalize();
-
-    // Ed25519 sign
+    // Ed25519 sign the domain-separated digest of the canonical content
+    let content_hash = content_digest(&canonical, true);
     let signature = signing_key.sign(&content_hash);
     let signature_hex = hex::encode(signature.to_bytes());
 
@@ -268,12 +280,15 @@ pub fn verify_attestation(
         &attestation.created_at,
         &attestation.expires_at,
     );
-    let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
-    let content_hash = hasher.finalize();
-
-    // Verify signature
-    let signature_valid = verifying_key.verify(&content_hash, &signature).is_ok();
+    // SECURITY (DOC-CRED-2): Domain-separated digest first, then the
+    // pre-domain-separation form so attestations issued before the change keep
+    // verifying until they expire.
+    let signature_valid = verifying_key
+        .verify(&content_digest(&canonical, true), &signature)
+        .is_ok()
+        || verifying_key
+            .verify(&content_digest(&canonical, false), &signature)
+            .is_ok();
 
     // Check expiry
     let mut expired = chrono::DateTime::parse_from_rfc3339(&attestation.expires_at)

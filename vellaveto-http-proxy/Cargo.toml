@@ -32,6 +32,7 @@ vellaveto-engine = { path = "../vellaveto-engine", version = "7.0.0" }
 vellaveto-audit = { path = "../vellaveto-audit", version = "7.0.0" }
 vellaveto-config = { path = "../vellaveto-config", version = "7.0.0" }
 vellaveto-mcp = { path = "../vellaveto-mcp", version = "7.0.0" }
+vellaveto-http-proxy-shield = { path = "../vellaveto-http-proxy-shield", version = "7.0.0" }
 vellaveto-approval = { path = "../vellaveto-approval", version = "7.0.0" }
 vellaveto-tls = { path = "../vellaveto-tls", version = "7.0.0" }
 tokio-rustls = "0.26"

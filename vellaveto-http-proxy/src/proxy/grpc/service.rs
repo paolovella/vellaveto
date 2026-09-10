@@ -1470,16 +1470,9 @@ impl McpGrpcService {
         let mut matched_approval_id: Option<String> = None;
         let mut matched_approval_registry: Option<&'static str> = None;
 
-        // SECURITY (IMP-R218-002): Extract requester identity for self-approval prevention.
-        // This prefers agent_identity.subject, then falls back to oauth_subject.
-        // Without it, pending approvals lose requester attribution and bypass the
-        // self-approval check.
-        let _requested_by = self.state.sessions.get(session_id).and_then(|s| {
-            s.agent_identity
-                .as_ref()
-                .and_then(|id| id.subject.clone())
-                .or_else(|| s.oauth_subject.clone())
-        });
+        // SECURITY (IMP-R218-002): Requester identity for self-approval prevention
+        // is derived inside create_pending_approval_with_context (helpers.rs),
+        // which reads it from the session itself. Nothing to pass in here.
 
         // SECURITY (FIND-R77-001): DNS resolution for IP-based policy evaluation.
         // Parity with HTTP handler (handlers.rs:717) and WS handler (websocket/mod.rs:710).
@@ -2284,15 +2277,9 @@ impl McpGrpcService {
         let request_signature_header = request_context.request_signature_header;
         let presented_approval_id = crate::proxy::helpers::extract_approval_id_from_meta(json_req);
 
-        // SECURITY (IMP-R218-002): Extract requester identity for self-approval prevention.
-        // Without this, gRPC approval requests lose requester attribution and
-        // bypass the self-approval check.
-        let _requested_by = self.state.sessions.get(session_id).and_then(|s| {
-            s.agent_identity
-                .as_ref()
-                .and_then(|id| id.subject.clone())
-                .or_else(|| s.oauth_subject.clone())
-        });
+        // SECURITY (IMP-R218-002): Requester identity for self-approval prevention
+        // is derived inside create_pending_approval_with_context (helpers.rs),
+        // which reads it from the session itself. Nothing to pass in here.
 
         // SECURITY (FIND-R110-HTTP-002): Memory poisoning detection for resource URIs.
         // Parity with HTTP handler (handlers.rs:1491-1546, R27-PROXY-2).
@@ -3217,6 +3204,9 @@ impl McpGrpcService {
             .output_schema_registry
             .register_from_tools_list(&response_json);
 
+        // Transport parity: feed discovery the same tools/list.
+        super::super::helpers::ingest_tools_for_discovery(&self.state, &response_json);
+
         // SECURITY (FIND-R53-GRPC-004): Output schema validation.
         // Parity with WS handler (websocket/mod.rs:2327-2370).
         let mut schema_violation_found = false;
@@ -3342,15 +3332,9 @@ impl McpGrpcService {
         let request_signature_header = request_context.request_signature_header;
         let presented_approval_id = crate::proxy::helpers::extract_approval_id_from_meta(json_req);
 
-        // SECURITY (IMP-R218-002): Extract requester identity for self-approval prevention.
-        // Without this, gRPC approval requests lose requester attribution and
-        // bypass the self-approval check.
-        let _requested_by = self.state.sessions.get(session_id).and_then(|s| {
-            s.agent_identity
-                .as_ref()
-                .and_then(|id| id.subject.clone())
-                .or_else(|| s.oauth_subject.clone())
-        });
+        // SECURITY (IMP-R218-002): Requester identity for self-approval prevention
+        // is derived inside create_pending_approval_with_context (helpers.rs),
+        // which reads it from the session itself. Nothing to pass in here.
 
         // SECURITY (FIND-R222-001): Injection scanning on task parameters.
         // Parity with PassThrough handler (service.rs:639) and WS handler
@@ -3949,12 +3933,6 @@ impl McpGrpcService {
         let session_id = request_context.session_id;
         let request_signature_header = request_context.request_signature_header;
         let presented_approval_id = crate::proxy::helpers::extract_approval_id_from_meta(json_req);
-        let _requested_by = self.state.sessions.get(session_id).and_then(|s| {
-            s.agent_identity
-                .as_ref()
-                .and_then(|id| id.subject.clone())
-                .or_else(|| s.oauth_subject.clone())
-        });
 
         // SECURITY (FIND-R222-001): Injection scanning on extension method parameters.
         // Parity with PassThrough handler and handle_task_request.

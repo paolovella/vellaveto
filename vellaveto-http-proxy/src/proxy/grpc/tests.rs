@@ -55,6 +55,8 @@ fn make_test_state() -> crate::proxy::ProxyState {
         audit: Arc::new(audit),
         sessions: Arc::new(sessions),
         upstream_url: "http://localhost:8000/mcp".to_string(),
+        traffic_padding: false,
+        strip_privacy_headers: false,
         http_client: reqwest::Client::new(),
         oauth: None,
         injection_scanner: None,

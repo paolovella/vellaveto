@@ -257,14 +257,60 @@ require_message_signing = true
 **Threat:** Exploiting multi-agent communication vulnerabilities
 **Risk:** Medium
 
-**Vellaveto Mitigations:**
-- Inter-agent message signing (Ed25519)
-- Nonce-based anti-replay protection
+**Vellaveto Mitigations (enforced at runtime):**
 - Shadow agent detection via fingerprinting
 - Trust level enforcement
 - A2A protocol security with message classification and Agent Card validation
 - DID:PLC identity binding with verification tiers
 - Accountability attestations with constant-time key comparison
+
+**Available as library primitives, not yet wired into the relay path:**
+- Inter-agent message signing (Ed25519, `vellaveto-mcp/src/agent_message.rs`)
+- Anti-replay for those messages — see below
+
+Tracked as DOC-CRED-5 in [the audit log](AUDIT_LOG.md). Until they are wired in,
+do not count them as active controls for ASI07.
+
+#### How the anti-replay actually works
+
+"Nonce-based anti-replay" on its own is not a safe claim: a nonce makes messages
+distinguishable, but nothing about a nonce stops a captured message from being
+resent. Replay protection here comes from three things together, all of which
+must hold:
+
+1. A **32-byte CSPRNG nonce** and a **Unix timestamp**, both covered by the
+   Ed25519 signature, so neither can be edited in transit.
+2. A **bidirectional freshness window** (`max_age_secs`, 300s by default):
+   stale messages are rejected, and so are far-future ones. This bounds how long
+   a captured message remains useful.
+3. A **seen-nonce cache** (`NonceTracker`) scoped to that window, which rejects
+   any nonce already observed. This is mandatory — the parameter used to be
+   optional, so a caller could silently disable it.
+
+This is equivalent in effect to using a TAI64N timestamp as the nonce; the two
+are kept as separate fields so messages created within one clock tick cannot
+collide.
+
+**Limits.** The cache is per-process: it does not survive a restart and is not
+shared across replicas, so a replay to a different replica or after a restart is
+not caught. Freshness is judged against the local clock with no external time
+source, so verifier clock skew widens or narrows the window silently.
+
+#### Replay coverage elsewhere
+
+Replay protection is not uniform across the codebase. Where it matters:
+
+| Surface | Replay defence |
+|---|---|
+| **Approvals** | Single-use. A successful allow transitions the approval to `Consumed`; reuse fails closed, with session and action-fingerprint binding. |
+| **DPoP (HTTP proxy)** | Full RFC 9449: `jti` cache keyed with `ath` when token binding is present, plus `iat` skew and exp/nbf checks. This is the working implementation — the `DpopVerifier` in `vellaveto-server` fails closed pending JOSE verification and is not wired into any route, and the NHI DPoP path performs protocol-level checks only, without signature verification or an `iat` check. |
+| **SAML assertions** | Assertion-ID deduplication cache, 1-hour TTL, 100k capacity. Note that `InResponseTo` validation is only reachable for SP-initiated flows, which are not implemented — only IdP-initiated SSO works, and replay defence there rests on the assertion-ID cache. |
+| **MCP task resume** | Nonce cache with **FIFO eviction at a count cap**. An attacker who emits `max_nonces` fresh nonces evicts older entries and can then replay one. Tracked as DOC-CRED-6. |
+| **A2A agent cards** | **None.** Cards have no nonce; a valid card is replayable for its whole `exp` lifetime. |
+| **Capability tokens** | **None** beyond `expires_at`. |
+
+There is no MCPSEC attack class for protocol replay, so the benchmark score does
+not speak to any of the above.
 
 ### ASI08: Unsafe Output Handling
 

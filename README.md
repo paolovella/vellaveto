@@ -57,33 +57,51 @@ Agent attempts: read_file("/home/user/.aws/credentials")
 
 ## Consumer Shield — Protect Users from AI Providers
 
-Enterprise security is half the story. When AI providers process tool calls through their infrastructure, they see your file paths, credentials, browsing patterns, and work context. The [Consumer Shield](examples/presets/consumer-shield.toml) is a user-side deployment mode that protects individuals from mass data collection — regardless of what the provider's terms of service say.
+Enterprise security is half the story. When AI providers process tool calls through their infrastructure, they see your credentials, browsing patterns, and work context. The [Consumer Shield](examples/presets/consumer-shield.toml) is a user-side deployment mode that protects individuals from mass data collection — regardless of what the provider's terms of service say.
 
 ```
-You type: "Read my medical records at /home/alice/health/lab-results.pdf"
+You type: "Email the Q3 numbers to alice@example.com from the box at 10.2.14.7"
   → Shield intercepts before the provider sees it
-  → PII replaced: "Read my medical records at [PII_PATH_1]"
+  → PII replaced: "Email the Q3 numbers to [PII_EMAIL_A3F91C4D8B2E7061]
+                   from the box at [PII_IPV4_7C40E1B9D6A2F358]"
   → Provider processes the sanitized request
-  → Response comes back, Shield restores original paths
-  → Encrypted local audit proves what was shared and what was stripped
+  → Response comes back, Shield restores the originals
+  → Encrypted local audit records what was shared and what was stripped
 ```
+
+Placeholder tokens are random, not sequential. A sequential placeholder is a
+desanitization oracle: an attacker who can guess `[PII_EMAIL_2]` can probe the
+restore path for a value they never saw.
 
 **What the Shield does:**
 
 | Layer | What It Protects | How |
 |---|---|---|
-| **PII sanitization** | File paths, emails, IPs, names, credentials | Bidirectional replacement with `[PII_{CAT}_{SEQ}]` placeholders — provider never sees originals |
-| **Encrypted local audit** | Full interaction history | XChaCha20-Poly1305 + Argon2id, stored on your machine, not the provider's |
-| **Session isolation** | Cross-session correlation | Each session gets a fresh credential — provider cannot link sessions to build a profile |
+| **PII sanitization** | Emails, US SSNs, US phone numbers, credit card numbers (Luhn-checked), IPv4 addresses, JWTs, AWS key IDs | Bidirectional replacement with `[PII_{CAT}_{TOKEN}]` placeholders (16 random hex chars) — provider never sees originals |
+| **Encrypted local audit** | Full interaction history | Every intercepted request and response, recorded before sanitization so you can see what was stripped. XChaCha20-Poly1305 + Argon2id, optional Merkle chaining, stored on your machine, not the provider's. Requires `audit_mode = "local"` and a passphrase |
+| **Session isolation** | Cross-session correlation | Each session gets its own PII mapping table and a fresh credential, so a placeholder or credential from one session is meaningless in another. Enable with `shield.session_isolation` |
 | **Credential vault** | API keys, tokens passed through tool calls | Blind credential binding — provider sees the tool call but not the credential value |
 | **Stylometric resistance** | Writing style fingerprinting | Whitespace, punctuation, emoji, and filler word normalization so your writing patterns are not identifiable |
-| **Warrant canary** | Legal compulsion transparency | Ed25519-signed canary — if it stops being updated, assume legal pressure |
+| **Warrant canary** | Legal compulsion transparency | Verification for Ed25519-signed canaries. Issuance and publication are not yet shipped — see [Warrant canary](docs/SECURITY_MODEL.md#warrant-canary) for what a canary does and does not establish |
+
+**Scope of PII detection.** The built-in patterns are the seven listed above and
+are **US-centric** — there is no IBAN, NHS number, EU national ID, passport, or
+non-US phone format, and **file paths and personal names are not detected**.
+Non-US and site-specific PII must be supplied as `CustomPiiPattern` entries. See
+[Security Model](docs/SECURITY_MODEL.md) for the pattern list.
 
 The Shield runs locally as `vellaveto-shield` and is licensed under **MPL-2.0** — no enterprise license required.
 
 ```bash
 vellaveto-shield --config consumer-shield.toml -- npx @anthropic/claude-desktop
 ```
+
+**Platform support.** Release binaries are built for **Linux (x86_64, aarch64,
+musl) and macOS (x86_64, aarch64)**. There is no Windows target: the code is not
+platform-specific and would largely compile, but it is neither built nor tested
+there, the child-process environment allowlist passes POSIX variable names only,
+and the `0o600` permission hardening applied to the audit log and checkpoint
+files is a no-op outside Unix. CI runs on Linux.
 
 ## What It Does
 
@@ -99,7 +117,7 @@ These invariants are enforced by concrete runtime capabilities:
 
 - **Policy engine** — glob/regex/domain matching, parameter constraints, time windows, call limits, per-tool quotas, secret substitution, declarative policy templates, Cedar-style ABAC, Wasm plugins. <5ms P99 evaluation.
 - **Threat detection** — injection, tool squatting, rug pulls, schema poisoning, DLP, memory poisoning, multi-agent collusion, semantic output contracts, trust-tier containment, contagion controls, response metadata stripping, delegation chain enforcement, jailbreak patterns, token leakage, system prompt leak, browser agent attacks, output anomalies, denial-of-wallet, cascade failure detection, exfiltration path analysis, server fingerprint drift, goal drift, A2A integrity, NHI overpermission, agent behavioral baseline, prompt template injection, ETDI signature verification, MINJA defense, and [control/data channel separation](docs/CHANNEL_SEPARATION.md) (source-class tainting, intent scope, behavioral sequence analysis). 30+ detection layers, not just regex.
-- **Identity and access** — OAuth 2.1/JWT, OIDC/SAML, RBAC, capability delegation, DPoP (RFC 9449), non-human identity lifecycle.
+- **Identity and access** — OAuth 2.1/JWT, OIDC/SAML, RBAC, capability delegation, DPoP (RFC 9449) on the HTTP proxy's OAuth path, non-human identity lifecycle.
 - **Topology discovery** — auto-discover MCP servers, tools, and resources. Detect drift, tool shadowing, and namespace collisions.
 - **Audit and compliance** — tamper-evident logs (SHA-256 + Merkle + Ed25519), ACIS decision envelopes, ZK proofs, OTel-compatible span generation, evidence packs mapped to EU AI Act, SOC 2, DORA, NIS2, NIST AI 600-1, ISO 42001, and 6 more frameworks. Annex IV documentation, Article 73 incident reports, and FRIA data export generators.
 - **Consumer shield** — all of the above, running user-side. See [Consumer Shield](#consumer-shield--protect-users-from-ai-providers).
@@ -107,7 +125,7 @@ These invariants are enforced by concrete runtime capabilities:
 **Core guarantees:**
 - **Complete mediation** — request and response paths evaluated before tool execution and before model return
 - **Fail-closed** — errors, missing policies, and unresolved context all produce `Deny`
-- **Tamper-evident audit** — SHA-256 hash chain + Merkle proofs + Ed25519 signed checkpoints, with structured ACIS decision envelopes on every verdict
+- **Tamper-evident audit** — SHA-256 hash chain + Merkle proofs, with structured ACIS decision envelopes on every verdict. Ed25519 signed checkpoints are **opt-in**: enable them, set a persistent `VELLAVETO_SIGNING_KEY` (otherwise a fresh key is generated per process and checkpoints do not survive a restart), and pin `VELLAVETO_TRUSTED_KEY` when verifying. Timestamps come from the signing host's clock — signatures attest authorship, not time. See [Signing and timestamps](docs/SECURITY_MODEL.md#signing-and-timestamps).
 - **Content-bound attestation** — HMAC-SHA256 signed scan results on every response, cryptographically binding injection/DLP/schema verdicts to the response content hash. Consumers verify with `SDK.verify_attestation()`. Set `VELLAVETO_ATTESTATION_SECRET` to enable.
 - **Public security contract** — [Security Guarantees](docs/SECURITY_GUARANTEES.md) + [Assurance Case](docs/ASSURANCE_CASE.md) with reproducible evidence
 
@@ -183,7 +201,7 @@ docker run -p 3000:3000 \
 
 ### Use with Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `~/.config/Claude/claude_desktop_config.json` (Linux) — Windows is not a supported target, see [Platform support](#consumer-shield--protect-users-from-ai-providers):
 
 ```json
 {
@@ -360,11 +378,11 @@ Lower crates never depend on higher crates. The boundary contract (`vellaveto-ty
 | **Policy Engine** | Glob/regex/domain matching, parameter constraints, time windows, call limits, per-tool quotas, secret substitution, declarative policy templates, action sequences, Cedar-style ABAC, Wasm plugins. Pre-compiled patterns, <5ms P99, decision cache. | [Policy](docs/POLICY.md) |
 | **Threat Detection** | 30+ detection layers: injection (Aho-Corasick + NFKC + obfuscation decode), tool squatting, rug pulls, schema poisoning, DLP, memory poisoning, multi-agent collusion, semantic output contracts, contagion controls, jailbreak patterns, token leakage, system prompt leak, browser agent attacks, output anomalies, denial-of-wallet, cascade failures, exfiltration path analysis, server fingerprint drift, goal drift, A2A integrity, NHI overpermission, agent baseline, prompt template injection, ETDI, MINJA, and containment-aware audit context. Maps to [OWASP Agentic Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/). | [Threat Model](docs/THREAT_MODEL.md) |
 | **Channel Separation** | Source-class auto-tainting (untrusted tool responses taint session regardless of detection), intent scope declarations (constrain tools/sinks per session with auto-narrowing on taint), behavioral sequence analysis (5 deterministic detectors for read→exfil, privilege escalation, tool diversity spikes, novel tools, action clustering). Three composing layers for detection-independent defense. | [Channel Separation](docs/CHANNEL_SEPARATION.md) |
-| **Identity & Access** | OAuth 2.1/JWT, OIDC/SAML, RBAC (4 roles, 14 perms), ABAC with forbid-overrides, capability delegation, DPoP (RFC 9449), non-human identity lifecycle. | [IAM](docs/IAM.md) |
+| **Identity & Access** | OAuth 2.1/JWT, OIDC/SAML (IdP-initiated), RBAC (4 roles, 14 perms), ABAC with forbid-overrides, capability delegation, DPoP (RFC 9449) on the HTTP proxy's OAuth path, non-human identity lifecycle. | [IAM](docs/IAM.md) |
 | **Approval Gates** | Bound, replay-safe, single-use approvals with session + fingerprint binding. Irreversible actions classified and gated. Human-readable fact summaries, lineage drift invalidation, structured containment context, trust/taint summaries, and risk scores preserved through pending, approve, and deny flows. | [Security Model](docs/SECURITY_MODEL.md) |
 | **Discovery** | Auto-discover MCP servers, tools, resources via topology graph. Detect drift, tool shadowing, namespace collisions. Topology guard as pre-policy filter. | [Architecture](#architecture) |
 | **Audit & Compliance** | Tamper-evident logs (SHA-256 + Merkle + Ed25519), ACIS decision envelopes, ZK proofs (Pedersen + Groth16), OTel-compatible span export, Annex IV documentation generator, Article 73 incident reports with cross-regulation deadlines, FRIA data export, evidence packs for 12 frameworks. | [Compliance](docs/COMPLIANCE.md) |
-| **Session Isolation** | Per-session credential rotation, context window isolation, stylometric normalization, traffic padding. Cross-session correlation is structurally prevented while users maintain full workflow continuity — context stays coherent and safe across sessions via deterministic action fingerprinting without leaking session boundaries. | [Consumer Shield](examples/presets/consumer-shield.toml) |
+| **Session Isolation** | Per-session PII mapping tables, credential rotation, context window isolation, and stylometric normalization, so a placeholder or credential from one session is meaningless in another. Correlation headers can be withheld from upstream (`shield.strip_privacy_headers`). Traffic padding is not yet wired — its framing needs peer negotiation. | [Consumer Shield](examples/presets/consumer-shield.toml) |
 | **Consumer Shield** | User-side PII sanitization, encrypted local audit (XChaCha20-Poly1305), credential vault, warrant canary. All boundary enforcement running client-side. | [Consumer Shield](examples/presets/consumer-shield.toml) |
 | **Deployment** | 6 modes: HTTP, stdio, WebSocket, gRPC, gateway, consumer shield. K8s operator (3 CRDs), Helm chart, Terraform provider, VS Code extension. | [Deployment](docs/DEPLOYMENT.md) |
 
@@ -377,7 +395,7 @@ VellaVeto is continuously exercised by internal adversarial audit sweeps mapped 
 - **Fail-closed everywhere** — empty policy sets, missing parameters, lock poisoning, capacity exhaustion, and evaluation errors all produce `Deny`
 - **Zero `unwrap()` in library code** — all error paths return typed errors; panics reserved for tests only
 - **Broad automated coverage** — Rust, SDK, integration, benchmark, and fuzz suites back the core policy, proxy, and audit paths
-- **Post-quantum ready** — Hybrid Ed25519 + ML-DSA-65 (FIPS 204) audit signatures, feature-gated behind `pqc-hybrid`
+- **Post-quantum ready** — Hybrid Ed25519 + ML-DSA-65 (FIPS 204) signatures on audit checkpoints and rotation manifests, feature-gated behind `pqc-hybrid`. Not applied to evidence packs, warrant canaries, agent cards, or capability tokens.
 
 ### Formal Verification
 
@@ -397,9 +415,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 12980 |
+| Rust tests | 13017 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 13957 |
+| Total tests tracked by manifest | 13994 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -421,7 +439,7 @@ The live property catalog is maintained in [formal/README.md](formal/README.md);
 All four previously documented limitations have been addressed:
 
 - **Cross-call DLP** — `SessionDlpTracker` with overlap buffers detects secrets split across multiple tool calls within a session (~150 bytes state per field). See [`cross_call_dlp.rs`](vellaveto-mcp/src/inspection/cross_call_dlp.rs).
-- **Grammar-validated injection** — JSON Schema `pattern` constraints compiled to DFAs provide a positive security model (Phase 72). The existing Aho-Corasick pre-filter remains as defense-in-depth. MCPSEC A14 attack tests validate enforcement.
+- **Grammar-validated injection** — JSON Schema `pattern` constraints compiled to DFAs provide a positive security model (Phase 72). The existing Aho-Corasick pre-filter remains as defense-in-depth. Covered by MCPSEC A14 regression tests (ours, not an independent check).
 - **TLS termination** — Built-in rustls-based TLS/mTLS via the [`vellaveto-tls`](vellaveto-tls/) crate. Supports SPIFFE identity extraction, post-quantum key exchange policies, and automatic ALPN negotiation. External reverse proxy remains optional.
 - **Independent verification** — [Bug bounty program](SECURITY_BOUNTY.md) (HackerOne + Huntr), [OSTIF audit scope](docs/OSTIF_AUDIT_SCOPE.md), Codecov integration, and OpenSSF Best Practices Badge enrollment.
 
@@ -429,7 +447,23 @@ Full details: [Security Guarantees](docs/SECURITY_GUARANTEES.md) | [Threat Model
 
 ### MCPSEC Benchmark
 
-We built [MCPSEC](mcpsec/), an open, vendor-neutral security benchmark for MCP gateways (Apache-2.0). It defines 10 formal security properties and 105 reproducible attack test cases across 16 attack classes. The current published reference result for VellaVeto is [mcpsec/results/vellaveto-v6.1.json](mcpsec/results/vellaveto-v6.1.json): **100/100 (Tier 5: Hardened)** on 105/105 tests. Run it against any MCP gateway — including ours:
+We wrote [MCPSEC](mcpsec/), an open security benchmark for MCP gateways (Apache-2.0), defining 10 security properties and 116 reproducible attack test cases across 17 attack classes, scored on **two axes**: security, and availability — the share of legitimate traffic allowed through. Both matter, because a gateway that denies every request scores highly on security by construction and is useless.
+
+**We also wrote the gateway, and the pass criteria.** Whatever VellaVeto scores here is worth what a self-graded exam is worth: a regression result showing the suite still passes, not independent validation. The test selection reflects the attacks this project chose to think about — protocol replay, for instance, has no class in the suite at all. No third-party gateway has been benchmarked, and we do not publish estimated scores for other products.
+
+With that caveat, the current reference result is [mcpsec/results/vellaveto-v7.0.json](mcpsec/results/vellaveto-v7.0.json), measured against the shipped [`vault`](examples/presets/vault.toml) preset:
+
+| Axis | Score |
+|---|---|
+| Security | **94.9% (Tier 4: Comprehensive)** |
+| Availability | **63.6%** |
+| Tests | 103/116 passed |
+
+The result file records the config, its SHA-256, the commit and both commands, so it can be reproduced. The nine security failures are configuration and surface rather than absent capability: A10.4 needs rate limits, which `vault` does not configure; A14.1–A14.4 need `schema_poisoning.enabled`, which defaults to `false`; A13.1–A13.4 are cross-call secret splitting, a session-scoped defence that lives in the MCP relay and cannot apply to the stateless `/api/evaluate` endpoint this benchmark targets.
+
+The earlier published figure of 100/100 (Tier 5) recorded no config, no command and no commit, and re-running the benchmark across all 18 shipped presets did not reproduce it on any of them. [That file](mcpsec/results/vellaveto-v6.1.json) is retained as a historical record and marked superseded.
+
+What the benchmark is actually good for is that it is reproducible. Run it against any MCP gateway, including ours, and check the result yourself:
 
 ```bash
 cargo run -p mcpsec -- --target http://localhost:3000 --format markdown
@@ -471,7 +505,6 @@ Full details: [Compliance Guide](docs/COMPLIANCE.md) | [Website: vellaveto.onlin
 | **Consumer privacy** | PII sanitization, session isolation, credential vault, stylometric resistance | None | None | PII scanning (Presidio) |
 | **Enterprise IAM** | OIDC, SAML, RBAC, SCIM, DPoP | None | None | None |
 | **Response attestation** | HMAC-SHA256 content-bound scan results | None | None | None |
-| **MCPSEC score** | 100/100 (Tier 5, reference run) | Not tested | Not applicable | Not tested |
 | **Ease of setup** | `--protect shield` (one flag) / Docker / Helm | Docker / binary | `pip install` | `pip install` |
 | **License** | MPL-2.0 / Apache-2.0 / BUSL-1.1 | Apache-2.0 | Apache-2.0 | MIT |
 

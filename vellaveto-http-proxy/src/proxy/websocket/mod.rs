@@ -5885,6 +5885,9 @@ async fn validate_ws_structured_content_response(
         .output_schema_registry
         .register_from_tools_list(json_val);
 
+    // Transport parity: feed discovery the same tools/list.
+    super::helpers::ingest_tools_for_discovery(state, json_val);
+
     let Some(result) = json_val.get("result") else {
         return false;
     };

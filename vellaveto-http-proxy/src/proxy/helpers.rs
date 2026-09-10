@@ -2753,6 +2753,56 @@ pub(super) async fn verify_manifest_from_response(
     }
 }
 
+/// Feed a `tools/list` response into the discovery engine.
+///
+/// The stdio relay has done this since R24-MCP-1
+/// (`vellaveto-mcp/src/proxy/bridge/relay.rs`); the HTTP-family transports
+/// constructed a `DiscoveryEngine` and never fed it, so topology discovery
+/// silently indexed nothing outside stdio. Call this wherever a transport
+/// registers output schemas from a tools/list response, so the two stay in step.
+///
+/// `ingest_tools_list` ignores payloads without a `tools` array, so this is safe
+/// to call on any response. Indexing is advisory: a failure is logged and the
+/// response proceeds, matching the relay.
+///
+/// A no-op without the `discovery` feature, so call sites need no cfg of their own.
+#[cfg(feature = "discovery")]
+pub(super) fn ingest_tools_for_discovery(state: &ProxyState, response_json: &Value) {
+    let Some(ref engine) = state.discovery_engine else {
+        return;
+    };
+    let Some(result_value) = response_json.get("result") else {
+        return;
+    };
+    // Identify the server by its upstream URL — the only stable server-scoped
+    // identifier the HTTP transports share.
+    let server_id = state.upstream_url.as_str();
+    match engine.ingest_tools_list(server_id, result_value) {
+        Ok(count) => {
+            if count > 0 {
+                tracing::debug!(
+                    server_id = server_id,
+                    count = count,
+                    "Discovery engine ingested tools from tools/list response"
+                );
+            }
+        }
+        Err(e) => {
+            // Advisory only — don't block the response on indexing failure.
+            tracing::warn!(
+                server_id = server_id,
+                error = %e,
+                "Discovery engine failed to ingest tools/list response"
+            );
+        }
+    }
+}
+
+/// No-op stand-in when the `discovery` feature is off, so the transport call
+/// sites stay identical across feature combinations.
+#[cfg(not(feature = "discovery"))]
+pub(super) fn ingest_tools_for_discovery(_state: &ProxyState, _response_json: &Value) {}
+
 #[cfg(test)]
 mod verus_spec_differential {
     //! Differential binding for `PARITY-HAND-1` (see

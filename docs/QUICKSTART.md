@@ -358,7 +358,13 @@ vellaveto-proxy --config policy.toml -- npx -y @modelcontextprotocol/server-file
 
 ### Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or
+`~/.config/Claude/claude_desktop_config.json` (Linux). Replace
+`/home/user/projects` below with the directory you want the filesystem server to
+serve.
+
+> Windows is not a supported target — release binaries are built for Linux and
+> macOS only. See [Platform support](../README.md#consumer-shield--protect-users-from-ai-providers).
 
 ```json
 {

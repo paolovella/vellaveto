@@ -2,7 +2,15 @@
 
 ## Overview
 
-This document defines 10 formal security properties that a secure MCP gateway must satisfy. Each property includes a formal statement (Lean-style), an informal description, and a testable predicate that the MCPSEC harness evaluates.
+This document defines 10 security properties MCPSEC evaluates. Each has a
+statement in mathematical notation, an informal description, and a testable
+predicate the harness checks.
+
+Two things to be clear about. The notation is **not machine-checked** — it is
+there to state each property unambiguously, not to claim a proof; nothing in
+this document is verified by Lean or any other prover. And these ten are the
+properties this suite chose to test, not an exhaustive account of what a secure
+gateway must satisfy; protocol replay, for one, is absent.
 
 ---
 
@@ -253,14 +261,16 @@ Policies with time-based conditions must be enforced correctly. A policy that al
 
 ## Property Weights
 
-Properties are weighted by their security impact:
+Properties are weighted by the authors' judgment of security impact. The weights
+are not a measured quantity — recompute the overall score from the per-property
+numbers if you weight them differently. See [SCORING.md](SCORING.md).
 
 | Property | Weight | Rationale |
 |----------|--------|-----------|
 | P1 (Access Control) | 15% | Foundation — everything depends on this |
 | P2 (Parameters) | 12% | Deep inspection differentiator |
 | P3 (Priority) | 5% | Correctness guarantee |
-| P4 (Injection) | 15% | Primary threat vector for AI agents |
+| P4 (Injection) | 15% | Widest evasion surface — many encodings reach one payload |
 | P5 (Schema) | 10% | Supply chain defense |
 | P6 (DLP) | 12% | Exfiltration prevention |
 | P7 (Audit) | 10% | Forensic and compliance requirement |

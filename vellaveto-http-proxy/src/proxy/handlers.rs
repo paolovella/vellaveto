@@ -529,6 +529,17 @@ pub async fn handle_mcp_post(
 ) -> Response {
     let mut body = body;
 
+    // Whether this client negotiated padded responses. Read once here, where
+    // the request headers are in scope, and threaded to every upstream forward
+    // below. A client that does not send the header always gets an unpadded
+    // body, because a padded one is not valid JSON.
+    let client_accepts_padding =
+        vellaveto_http_proxy_shield::traffic_padding::client_accepts_padding(
+            headers
+                .get(vellaveto_http_proxy_shield::traffic_padding::PADDING_NEGOTIATION_HEADER)
+                .and_then(|v| v.to_str().ok()),
+        );
+
     // SECURITY (R8-HTTP-2): Validate Content-Type is application/json.
     // The MCP Streamable HTTP spec requires JSON content. Rejecting other
     // content types prevents bypass of WAF rules and request smuggling.
@@ -2494,7 +2505,8 @@ pub async fn handle_mcp_post(
                                 auth_header_for_upstream.as_deref(),
                                 Some((gw_tp.as_str(), gw_ts.as_deref())),
                                 &mcp_param_headers,
-                            ),
+                            )
+                            .with_client_padding(client_accepts_padding),
                         )
                         .await
                     } else {
@@ -2510,7 +2522,8 @@ pub async fn handle_mcp_post(
                                 auth_header_for_upstream.as_deref(),
                                 Some((up_tp.as_str(), up_ts.as_deref())),
                                 &mcp_param_headers,
-                            ),
+                            )
+                            .with_client_padding(client_accepts_padding),
                         )
                         .await
                     };
@@ -3329,7 +3342,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     let response = attach_session_header(response, &session_id);
@@ -3476,7 +3490,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     attach_session_header(response, &session_id)
@@ -3872,7 +3887,8 @@ pub async fn handle_mcp_post(
                     auth_header_for_upstream.as_deref(),
                     Some((up_tp.as_str(), up_ts.as_deref())),
                     &mcp_param_headers,
-                ),
+                )
+                .with_client_padding(client_accepts_padding),
             )
             .await;
 
@@ -3937,7 +3953,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
 
@@ -4639,7 +4656,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     let response = attach_trace_header(response, trace);
@@ -5411,7 +5429,8 @@ pub async fn handle_mcp_post(
                             auth_header_for_upstream.as_deref(),
                             Some((up_tp.as_str(), up_ts.as_deref())),
                             &mcp_param_headers,
-                        ),
+                        )
+                        .with_client_padding(client_accepts_padding),
                     )
                     .await;
                     attach_session_header(response, &session_id)

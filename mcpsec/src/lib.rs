@@ -145,7 +145,7 @@ pub async fn run_benchmark(config: &BenchmarkConfig) -> BenchmarkResult {
     let properties = scoring::calculate_property_scores(&attack_results);
     let overall_score = scoring::calculate_overall_score(&properties);
     let availability_score = scoring::calculate_availability_score(&attack_results);
-    let tier = scoring::score_to_tier(overall_score);
+    let tier = scoring::assign_tier(overall_score, &properties);
     let tier_name = scoring::tier_name(tier);
 
     let passed = attack_results.iter().filter(|r| r.passed).count();

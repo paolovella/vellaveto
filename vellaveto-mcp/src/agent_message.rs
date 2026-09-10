@@ -13,10 +13,36 @@
 //! to ensure message integrity and prevent tampering in multi-agent systems.
 //!
 //! Features:
-//! - Ed25519 message signing
-//! - Nonce-based anti-replay protection
-//! - Message freshness validation
-//! - Signature verification
+//! - Ed25519 message signing over a length-delimited
+//!   `sender ‖ recipient ‖ payload ‖ nonce ‖ timestamp` preimage
+//! - Anti-replay: a 32-byte CSPRNG nonce and a Unix timestamp, both covered by
+//!   the signature, checked against a bounded freshness window in both
+//!   directions and a seen-nonce cache scoped to that window
+//! - Signature verification against a registered sender key
+//!
+//! # Replay protection: what this does and does not give you
+//!
+//! A nonce alone is not replay protection — it makes messages distinguishable,
+//! but nothing stops a captured message being resent. What bounds the attack is
+//! the pairing: the timestamp limits how long a captured message stays useful,
+//! and the nonce cache rejects anything already seen inside that window. Both
+//! are covered by the signature, so neither can be edited in transit. This is
+//! the same shape as using a TAI64N timestamp directly as the nonce, with the
+//! two kept as separate fields so that messages created within one clock tick
+//! do not collide.
+//!
+//! Two limits worth knowing:
+//!
+//! - [`NonceTracker`] is **per-process**. It does not survive a restart and is
+//!   not shared between replicas, so replay protection is scoped to a single
+//!   process — a replay to a different replica, or after a restart, is not
+//!   caught here.
+//! - Freshness depends on the local clock, and the sender's and verifier's
+//!   clocks are compared without any external time source. A verifier with a
+//!   badly skewed clock will reject fresh messages or accept stale ones.
+//!
+//! This module provides the primitives. As of this writing they are **not
+//! wired into the relay path** — see DOC-CRED-5 in `docs/AUDIT_LOG.md`.
 //!
 //! Reference: MCP 2025-11-25 Security Best Practices
 
@@ -191,17 +217,42 @@ impl SignedAgentMessage {
         })
     }
 
-    /// Verify the message signature and freshness.
+    /// Verify the message signature, freshness, and nonce novelty.
+    ///
+    /// Replay protection needs all three of these together, and none of them is
+    /// sufficient alone:
+    ///
+    /// - The **nonce** is 32 random bytes covered by the signature, so it
+    ///   cannot be altered without invalidating the message. On its own it only
+    ///   makes messages distinguishable — it does not stop a captured message
+    ///   from being resent.
+    /// - The **timestamp** is also covered by the signature and is checked in
+    ///   both directions against `max_age_secs`: stale messages are rejected,
+    ///   and so are far-future ones (which would otherwise bypass the age check
+    ///   through `saturating_sub` returning 0). This bounds how long a captured
+    ///   message stays useful.
+    /// - The **nonce tracker** rejects a nonce seen before within that window.
+    ///   It is required, not optional: a bounded freshness window without a
+    ///   seen-nonce cache still admits replays inside the window.
     ///
     /// # Arguments
     /// * `sender_pubkey` - The sender's public key for verification
-    /// * `max_age_secs` - Maximum allowed message age in seconds
-    /// * `nonce_tracker` - Optional nonce tracker for replay protection
+    /// * `max_age_secs` - Maximum allowed message age in seconds, in both
+    ///   directions. The tracker's retention window should be at least this
+    ///   long, or a nonce can be forgotten while its message is still fresh.
+    /// * `nonce_tracker` - Seen-nonce cache. Per-process: it does not survive a
+    ///   restart and is not shared across replicas, so replay protection is
+    ///   scoped to one process.
+    ///
+    /// # Errors
+    /// Returns [`MessageError::NonceReplay`] if the nonce has been seen,
+    /// [`MessageError::MessageExpired`] if the timestamp is outside the window,
+    /// and [`MessageError::InvalidSignature`] if verification fails.
     pub fn verify(
         &self,
         sender_pubkey: &VerifyingKey,
         max_age_secs: u64,
-        nonce_tracker: Option<&NonceTracker>,
+        nonce_tracker: &NonceTracker,
     ) -> Result<(), MessageError> {
         // SECURITY (R241-MCP-2): Validate fields before processing.
         self.validate()?;
@@ -230,11 +281,12 @@ impl SignedAgentMessage {
             });
         }
 
-        // Check for replay (if tracker provided)
-        if let Some(tracker) = nonce_tracker {
-            if !tracker.check_and_record(&self.nonce) {
-                return Err(MessageError::NonceReplay);
-            }
+        // SECURITY (DOC-CRED-5): Replay check is mandatory. This was previously
+        // `Option<&NonceTracker>`, so passing `None` silently disabled replay
+        // protection while the freshness check above still passed — a fail-open
+        // default in a security API.
+        if !nonce_tracker.check_and_record(&self.nonce) {
+            return Err(MessageError::NonceReplay);
         }
 
         // Verify signature
@@ -550,11 +602,15 @@ impl AgentKeyRegistry {
     }
 
     /// Verify a signed message using the registry.
+    ///
+    /// Resolves the sender's key from the registry, then applies the full
+    /// check in [`SignedAgentMessage::verify`] — signature, bidirectional
+    /// freshness window, and mandatory nonce novelty.
     pub fn verify_message(
         &self,
         message: &SignedAgentMessage,
         max_age_secs: u64,
-        nonce_tracker: Option<&NonceTracker>,
+        nonce_tracker: &NonceTracker,
     ) -> Result<(), MessageError> {
         let sender_key = self
             .get(&message.sender)
@@ -587,7 +643,7 @@ mod tests {
         assert_eq!(message.payload, b"Hello, Bob!");
 
         // Verify with alice's public key
-        let result = registry.verify_message(&message, 60, None);
+        let result = registry.verify_message(&message, 60, &NonceTracker::new(300));
         assert!(result.is_ok());
     }
 
@@ -602,7 +658,7 @@ mod tests {
         let message = alice.sign_message("bob", b"Hello, Bob!").unwrap();
 
         // Verification should fail
-        let result = registry.verify_message(&message, 60, None);
+        let result = registry.verify_message(&message, 60, &NonceTracker::new(300));
         assert!(matches!(result, Err(MessageError::VerificationFailed(_))));
     }
 
@@ -619,7 +675,7 @@ mod tests {
         // Re-sign with old timestamp (simulating expired message)
         // Note: In real usage, you can't re-sign without the private key,
         // so we test by creating a message with an old timestamp
-        let result = registry.verify_message(&message, 60, None);
+        let result = registry.verify_message(&message, 60, &NonceTracker::new(300));
         assert!(matches!(result, Err(MessageError::MessageExpired { .. })));
     }
 
@@ -633,12 +689,65 @@ mod tests {
         let message = alice.sign_message("bob", b"Hello!").unwrap();
 
         // First verification should succeed
-        let result = registry.verify_message(&message, 60, Some(&nonce_tracker));
+        let result = registry.verify_message(&message, 60, &nonce_tracker);
         assert!(result.is_ok());
 
         // Replay should fail
-        let result = registry.verify_message(&message, 60, Some(&nonce_tracker));
+        let result = registry.verify_message(&message, 60, &nonce_tracker);
         assert!(matches!(result, Err(MessageError::NonceReplay)));
+    }
+
+    /// SECURITY (DOC-CRED-5): A caller cannot opt out of replay protection.
+    ///
+    /// The tracker used to be `Option<&NonceTracker>`, so `None` disabled the
+    /// replay check while the freshness window still passed — a replay inside
+    /// the window was accepted. The signature is now `&NonceTracker`, so the
+    /// only way to reach `verify` is with a tracker, and a message replayed
+    /// well inside its freshness window is rejected.
+    #[test]
+    fn test_replay_within_freshness_window_is_rejected() {
+        let alice = AgentKeyPair::generate("alice");
+        let registry = AgentKeyRegistry::new();
+        registry.register("alice", *alice.verifying_key());
+        let nonce_tracker = NonceTracker::new(3600);
+
+        let message = alice.sign_message("bob", b"transfer funds").unwrap();
+
+        // A generous freshness window: the timestamp check cannot be what
+        // rejects the replay here, so only the nonce cache can.
+        assert!(registry
+            .verify_message(&message, 3600, &nonce_tracker)
+            .is_ok());
+
+        for _ in 0..3 {
+            assert!(
+                matches!(
+                    registry.verify_message(&message, 3600, &nonce_tracker),
+                    Err(MessageError::NonceReplay)
+                ),
+                "a message replayed inside its freshness window must be rejected"
+            );
+        }
+    }
+
+    /// Distinct messages get distinct nonces, so the replay check does not
+    /// reject legitimate traffic between the same pair of agents.
+    #[test]
+    fn test_distinct_messages_are_not_treated_as_replays() {
+        let alice = AgentKeyPair::generate("alice");
+        let registry = AgentKeyRegistry::new();
+        registry.register("alice", *alice.verifying_key());
+        let nonce_tracker = NonceTracker::new(300);
+
+        for i in 0..8u8 {
+            let message = alice.sign_message("bob", &[i]).unwrap();
+            assert!(
+                registry
+                    .verify_message(&message, 60, &nonce_tracker)
+                    .is_ok(),
+                "message {i} was wrongly rejected as a replay"
+            );
+        }
     }
 
     #[test]
@@ -687,7 +796,7 @@ mod tests {
 
         let message = alice.sign_message("bob", b"Hello!").unwrap();
 
-        let result = registry.verify_message(&message, 60, None);
+        let result = registry.verify_message(&message, 60, &NonceTracker::new(300));
         assert!(matches!(result, Err(MessageError::MissingSenderKey)));
     }
 
@@ -843,7 +952,9 @@ mod tests {
                 .unwrap()
                 .as_secs(),
         };
-        let err = msg.verify(&pubkey, 300, None).unwrap_err();
+        let err = msg
+            .verify(&pubkey, 300, &NonceTracker::new(300))
+            .unwrap_err();
         assert!(
             matches!(err, MessageError::InvalidSender(_)),
             "expected InvalidSender, got: {err}"

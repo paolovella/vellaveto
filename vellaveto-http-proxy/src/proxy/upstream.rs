@@ -51,6 +51,9 @@ pub(super) struct UpstreamForwardOptions<'a> {
     pub trace_ctx: Option<(&'a str, Option<&'a str>)>,
     pub mcp_param_headers: &'a [(HeaderName, HeaderValue)],
     pub last_event_id: Option<&'a str>,
+    /// Whether this client negotiated padded responses. Defaults to false, so a
+    /// caller that does not set it cannot accidentally pad an unaware client.
+    pub client_accepts_padding: bool,
 }
 
 impl<'a> UpstreamForwardOptions<'a> {
@@ -64,7 +67,18 @@ impl<'a> UpstreamForwardOptions<'a> {
             trace_ctx,
             mcp_param_headers,
             last_event_id: None,
+            client_accepts_padding: false,
         }
+    }
+
+    /// Record whether this client negotiated padded responses.
+    ///
+    /// Separate from `post()` so the default stays "no padding": a caller that
+    /// forgets this cannot accidentally send framed bytes to a client that
+    /// cannot parse them.
+    pub fn with_client_padding(mut self, accepts: bool) -> Self {
+        self.client_accepts_padding = accepts;
+        self
     }
 }
 
@@ -110,6 +124,57 @@ pub(super) fn make_jsonrpc_error(id: Option<&Value>, code: i64, message: &str) -
     (StatusCode::OK, Json(error_response)).into_response()
 }
 
+/// Apply negotiated response padding, if both sides asked for it.
+///
+/// Returns the body to send and, when padded, the framing version to advertise.
+///
+/// Padding is gated on **both** `shield.traffic_padding` and the client's
+/// explicit opt-in. That is not belt-and-braces: `pad_content` emits
+/// `[4-byte LE length][content][zero padding]`, which is not valid JSON, so
+/// padding a client that cannot unpad would break it outright. Every standard
+/// MCP client falls through this untouched.
+///
+/// Content larger than the biggest bucket is returned unpadded rather than
+/// framed, matching `padded_size`, which declines to pad what it cannot bucket.
+pub(super) fn apply_response_padding(
+    state: &ProxyState,
+    client_accepts_padding: bool,
+    body: Vec<u8>,
+) -> (Vec<u8>, Option<&'static str>) {
+    use vellaveto_http_proxy_shield::traffic_padding::{
+        pad_content, padded_size, PADDING_VERSION_V1, SIZE_BUCKETS,
+    };
+
+    if !state.traffic_padding || !client_accepts_padding {
+        return (body, None);
+    }
+
+    // 4 bytes of length prefix ride along with the content, so bucket on that.
+    let framed_len = body.len().saturating_add(4);
+    let target = padded_size(framed_len, &SIZE_BUCKETS);
+    if target <= framed_len {
+        // Nothing to gain: the content already fills or exceeds the largest
+        // bucket. Send it unpadded rather than framing it for no benefit.
+        return (body, None);
+    }
+
+    let padded = pad_content(&body, target);
+    (padded, Some(PADDING_VERSION_V1))
+}
+
+/// Whether a header must be withheld from upstream for privacy.
+///
+/// Consults [`PRIVACY_STRIP_HEADERS`] so the list stays the single source of
+/// truth rather than being restated at each call site.
+///
+/// [`PRIVACY_STRIP_HEADERS`]: vellaveto_http_proxy_shield::PRIVACY_STRIP_HEADERS
+pub(super) fn strip_for_privacy(state: &ProxyState, header: &str) -> bool {
+    state.strip_privacy_headers
+        && vellaveto_http_proxy_shield::PRIVACY_STRIP_HEADERS
+            .iter()
+            .any(|stripped| stripped.eq_ignore_ascii_case(header))
+}
+
 /// Forward a request to the upstream MCP server.
 ///
 /// If OAuth pass-through is enabled, the original Authorization header is
@@ -147,11 +212,18 @@ pub(super) async fn forward_get_to_upstream(
         request_builder = request_builder.header("authorization", auth);
     }
 
-    // Phase 28: Inject W3C Trace Context headers for distributed tracing
+    // Phase 28: Inject W3C Trace Context headers for distributed tracing.
+    // Suppressed under strip_privacy_headers: these are precisely the values an
+    // upstream operator would use to correlate a user's requests across
+    // sessions. See PRIVACY_STRIP_HEADERS for the full set.
     if let Some((traceparent, tracestate)) = trace_ctx {
-        request_builder = request_builder.header("traceparent", traceparent);
+        if !strip_for_privacy(state, "traceparent") {
+            request_builder = request_builder.header("traceparent", traceparent);
+        }
         if let Some(ts) = tracestate {
-            request_builder = request_builder.header("tracestate", ts);
+            if !strip_for_privacy(state, "tracestate") {
+                request_builder = request_builder.header("tracestate", ts);
+            }
         }
     }
 
@@ -445,11 +517,16 @@ pub(super) async fn forward_to_upstream_url(
         request_builder = request_builder.header("authorization", auth);
     }
 
-    // Phase 28: Inject W3C Trace Context headers for distributed tracing
+    // Phase 28: Inject W3C Trace Context headers for distributed tracing.
+    // Suppressed under strip_privacy_headers — see the GET path above.
     if let Some((traceparent, tracestate)) = options.trace_ctx {
-        request_builder = request_builder.header("traceparent", traceparent);
+        if !strip_for_privacy(state, "traceparent") {
+            request_builder = request_builder.header("traceparent", traceparent);
+        }
         if let Some(ts) = tracestate {
-            request_builder = request_builder.header("tracestate", ts);
+            if !strip_for_privacy(state, "tracestate") {
+                request_builder = request_builder.header("tracestate", ts);
+            }
         }
     }
 
@@ -882,6 +959,10 @@ pub(super) async fn forward_to_upstream_url(
                                 state
                                     .output_schema_registry
                                     .register_from_tools_list(&response_json);
+
+                                // Transport parity: feed discovery the same
+                                // tools/list (stdio relay does this in relay.rs).
+                                super::helpers::ingest_tools_for_discovery(state, &response_json);
 
                                 // MCP 2025-06-18: Validate structuredContent against registered schemas
                                 if let Some(structured) = result.get("structuredContent") {
@@ -1369,9 +1450,21 @@ pub(super) async fn forward_to_upstream_url(
                         // Forward the raw bytes (no injection/DLP blocking triggered)
                         // SECURITY (R12-RESP-10): Do NOT copy Mcp-Session-Id from upstream.
                         // The proxy is the session authority — see SSE path comment above.
-                        Response::builder()
+                        let (final_body, padding_version) = apply_response_padding(
+                            state,
+                            options.client_accepts_padding,
+                            final_body.to_vec(),
+                        );
+                        let mut builder = Response::builder()
                             .status(status)
-                            .header("content-type", "application/json")
+                            .header("content-type", "application/json");
+                        if let Some(version) = padding_version {
+                            builder = builder.header(
+                                vellaveto_http_proxy_shield::traffic_padding::PADDING_APPLIED_HEADER,
+                                version,
+                            );
+                        }
+                        builder
                             .body(Body::from(final_body))
                             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
                     }
