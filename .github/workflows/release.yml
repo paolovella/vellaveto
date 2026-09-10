@@ -42,12 +42,12 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
           components: clippy, rustfmt
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
 
@@ -163,7 +163,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
@@ -180,7 +180,7 @@ jobs:
         # to prevent supply-chain attacks via unpinned git installs.
         run: cargo install cross --version 0.2.5 --locked
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
           key: ${{ matrix.target }}
@@ -412,7 +412,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c
         with:
           distribution: temurin
           java-version: "17"
@@ -466,10 +466,10 @@ jobs:
           fetch-depth: 1
 
       - name: Set up QEMU (multi-platform)
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8
+        uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e
 
       - name: Log in to GHCR
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f
@@ -501,7 +501,7 @@ jobs:
 
       - name: Upload Trivy scan results
         if: ${{ always() && hashFiles('trivy-results.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@f205ea1c3313d32999d8d6a48b4f6530d4437b38
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938
         with:
           sarif_file: trivy-results.sarif
 
@@ -523,11 +523,11 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           cache-on-failure: true
 
@@ -535,7 +535,7 @@ jobs:
         run: cargo build --release --workspace --locked
 
       - name: Generate SBOM (CycloneDX JSON)
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26
         with:
           path: .
           format: cyclonedx-json
@@ -551,7 +551,7 @@ jobs:
 
       - name: Attest release binaries provenance
         if: ${{ github.event.repository.private == false || vars.ENABLE_ATTESTATIONS == 'true' }}
-        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
         with:
           subject-path: |
             target/release/vellaveto
@@ -643,7 +643,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           tag_name: v${{ inputs.version }}
           body_path: release-notes.md

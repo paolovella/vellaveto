@@ -44,14 +44,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
-      - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master
         with:
           # Pinned for the same reason as the fuzz job in ci.yml — see the
           # comment there. Keep these toolchain pins in sync.
           toolchain: nightly-2026-06-01
           components: llvm-tools-preview
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
           cache-targets: false
