@@ -8,7 +8,7 @@
 //     http://www.apache.org/licenses/LICENSE-2.0
 
 //! End-to-end integration test: runs the full benchmark against a mock gateway
-//! that simulates a "perfect" MCP gateway (one that passes all 105 tests).
+//! that simulates a "perfect" MCP gateway (one that passes all 116 tests).
 //!
 //! This validates the harness itself — if the mock is correct and the harness
 //! scores 100%, the harness logic is sound.
@@ -319,7 +319,7 @@ async fn test_full_benchmark_against_mock_gateway() {
     // Some edge-case tests (A8.4 CEF, A16.2 cooldown) may need tuning.
     assert_eq!(result.summary.total_tests, 116, "Should run all 116 tests");
 
-    // The mock is designed to pass all 105 tests. If any fail, the mock
+    // The mock is designed to pass all 116 tests. If any fail, the mock
     // needs updating — this validates harness correctness, not a real gateway.
     assert_eq!(
         result.summary.passed,
@@ -392,7 +392,8 @@ async fn test_class_filter_against_mock() {
 // That raises the question this test answers: how much of the benchmark is
 // satisfied by refusing every request?
 //
-// It matters because MCPSEC's pass conditions lean on denial. Of 105 tests, 57
+// It matters because MCPSEC's pass conditions lean on denial. Of the 105
+// security tests, 57
 // use `is_deny` (403/429 or a Deny verdict), and the 27 detection checks
 // (`has_injection`, `has_dlp`) fall back to `is_deny` too. Exactly one test
 // (`is_clean`, A4.8) checks for a false positive. So a gateway that blocks

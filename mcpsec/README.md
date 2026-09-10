@@ -22,7 +22,7 @@ cargo run -p mcpsec -- --target http://localhost:3000 --output results/my-gatewa
 # Run with markdown report
 cargo run -p mcpsec -- --target http://localhost:3000 --format markdown
 
-# List all 105 test cases
+# List all 116 test cases
 cargo run -p mcpsec -- --list
 
 # Run specific attack classes only
@@ -60,7 +60,7 @@ cargo run -p mcpsec -- --target http://localhost:3000 --format junit --output re
 
 See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 
-### 16 Attack Classes (A1-A16)
+### 17 Attack Classes (A1-A17)
 
 | # | Class | Tests | OWASP Ref |
 |---|-------|-------|-----------|
@@ -80,6 +80,7 @@ See [PROPERTIES.md](PROPERTIES.md) for formal definitions.
 | A14 | Schema Pattern Bypass | 4 | - |
 | A15 | Agent Identity Spoofing | 5 | ASI02 |
 | A16 | Circuit Breaker Evasion | 4 | MCP10 |
+| A17 | Legitimate Traffic | 11 | — |
 
 **Total: 116 test cases** (105 security + 11 legitimate-traffic). See [ATTACKS.md](ATTACKS.md) for full catalog.
 
@@ -141,7 +142,7 @@ mcpsec/
 │   ├── scoring.rs         # Score calculation
 │   ├── compare.rs         # Baseline regression detection
 │   ├── remediation.rs     # Per-class fix guidance
-│   └── attacks/           # 16 attack modules (a01-a16)
+│   └── attacks/           # 17 attack modules (a01-a17)
 ├── tests/
 │   ├── self_test.rs       # Validate harness logic
 │   └── mock_gateway_test.rs # End-to-end test with embedded mock server

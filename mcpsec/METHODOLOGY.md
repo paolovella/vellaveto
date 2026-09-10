@@ -39,7 +39,7 @@ The harness produces a JSON report with:
 - **Overall score** (0-100%)
 - **Tier** (0-5)
 - **Per-property scores** (P1-P10, each 0-100%)
-- **Per-attack results** (105 tests, each pass/fail with latency)
+- **Per-attack results** (116 tests, each pass/fail with latency)
 
 ### Step 3: Generate Report
 
