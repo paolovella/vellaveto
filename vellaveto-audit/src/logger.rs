@@ -37,9 +37,29 @@ use crate::{trusted_audit_fs, verified_audit_append};
 /// When the log file exceeds `max_file_size`, it is rotated to a
 /// timestamped filename (e.g., `audit.2026-02-02T12-00-00.log`) and
 /// a fresh file + hash chain is started.
+/// The head of the hash chain, plus the timestamp of the last appended entry.
+///
+/// These two travel together under a single lock deliberately. They express one
+/// invariant — "what the last entry was" — and splitting them across two mutexes
+/// would let a concurrent append observe a hash and a timestamp from different
+/// entries, which is exactly the kind of race that makes the timestamp guard
+/// below useless.
+#[derive(Debug, Default)]
+pub(crate) struct ChainHead {
+    /// Hash of the last successfully written entry.
+    pub(crate) last_hash: Option<String>,
+    /// Timestamp of the last successfully written entry.
+    ///
+    /// SECURITY: Deliberately NOT reset on rotation, unlike `last_hash`. A new
+    /// file starts a new hash chain, but wall-clock time does not restart, so
+    /// carrying the timestamp across rotation keeps a backwards clock from being
+    /// laundered by triggering a rotation.
+    pub(crate) last_timestamp: Option<String>,
+}
+
 pub struct AuditLogger {
     pub(crate) log_path: PathBuf,
-    pub(crate) last_hash: Mutex<Option<String>>,
+    pub(crate) chain_head: Mutex<ChainHead>,
     pub(crate) redaction_level: RedactionLevel,
     /// Maximum log file size in bytes before rotation. 0 = no rotation.
     pub(crate) max_file_size: u64,
@@ -104,7 +124,7 @@ impl AuditLogger {
     pub fn new(log_path: PathBuf) -> Self {
         Self {
             log_path,
-            last_hash: Mutex::new(None),
+            chain_head: Mutex::new(ChainHead::default()),
             redaction_level: RedactionLevel::KeysAndPatterns,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             signing_key: None,
@@ -128,7 +148,7 @@ impl AuditLogger {
     pub fn new_unredacted(log_path: PathBuf) -> Self {
         Self {
             log_path,
-            last_hash: Mutex::new(None),
+            chain_head: Mutex::new(ChainHead::default()),
             redaction_level: RedactionLevel::Off,
             max_file_size: DEFAULT_MAX_FILE_SIZE,
             signing_key: None,
@@ -515,14 +535,15 @@ impl AuditLogger {
         // is acceptable because rotation is infrequent (~1 per 100MB of entries).
         // The common path (no rotation) holds the lock only for hash computation
         // and a single append write.
-        let mut last_hash_guard = self.last_hash.lock().await;
+        let mut chain_head = self.chain_head.lock().await;
 
         // Rotate if the current log exceeds max_file_size.
         // Done under the lock to prevent concurrent writes from racing.
         if self.maybe_rotate().await? {
-            *last_hash_guard = None; // New file = new hash chain
-                                     // SECURITY (FIND-R52-AUDIT-002): Use SeqCst for sequence counter to prevent
-                                     // reordering that could cause duplicate sequence numbers under concurrent access.
+            chain_head.last_hash = None; // New file = new hash chain
+                                         // (last_timestamp deliberately survives — see ChainHead)
+                                         // SECURITY (FIND-R52-AUDIT-002): Use SeqCst for sequence counter to prevent
+                                         // reordering that could cause duplicate sequence numbers under concurrent access.
             self.entry_count.store(
                 verified_audit_append::entry_count_after_rotation(),
                 Ordering::SeqCst,
@@ -587,11 +608,64 @@ impl AuditLogger {
             metadata: logged_metadata,
             sequence,
             entry_hash: None,
-            prev_hash: last_hash_guard.clone(),
+            prev_hash: chain_head.last_hash.clone(),
             commitment: None,
             tenant_id,
             acis_envelope: logged_acis_envelope,
         };
+
+        // SECURITY: Enforce timestamp monotonicity at APPEND, not only at verify.
+        //
+        // verify_chain() has always rejected a chain whose timestamps regress
+        // (R226-CROSS-1), but nothing stopped such an entry being written. A
+        // clock that steps backwards — NTP correction, VM migration, or
+        // tampering on a host that already has write access — therefore produced
+        // entries that appended cleanly and permanently broke verification of
+        // every later entry, discovered only when someone next verified.
+        //
+        // The entry is clamped rather than refused. Refusing would drop the
+        // record, and since every audit call site logs and continues rather than
+        // propagating, that drop would be invisible in the audit trail itself —
+        // handing anyone who can move the clock backwards a way to suppress
+        // audit entries. Clamping keeps the record, keeps the chain verifiable,
+        // and turns the anomaly into evidence: the observed wall-clock reading
+        // is preserved in metadata under `timestamp_regression`.
+        //
+        // Uses the verifier's own rule via timestamp_ordered_after, under the
+        // same lock that links the hash chain, so a concurrent append cannot
+        // slip past it.
+        if !crate::verification::timestamp_ordered_after(
+            &entry.timestamp,
+            chain_head.last_timestamp.as_deref(),
+        ) {
+            let observed = entry.timestamp.clone();
+            // Clamp to the previous entry's timestamp: the earliest value that
+            // keeps the chain non-decreasing, so the clamp never overstates how
+            // late the event was.
+            let clamped = chain_head
+                .last_timestamp
+                .clone()
+                .unwrap_or_else(|| observed.clone());
+
+            tracing::error!(
+                observed_timestamp = %observed,
+                clamped_to = %clamped,
+                "Audit timestamp regression: system clock moved backwards. Entry \
+                 clamped to preserve chain verifiability; observed value recorded \
+                 in metadata."
+            );
+
+            entry.timestamp = clamped.clone();
+            if let Some(obj) = entry.metadata.as_object_mut() {
+                obj.insert(
+                    "timestamp_regression".to_string(),
+                    serde_json::json!({
+                        "observed": observed,
+                        "clamped_to": clamped,
+                    }),
+                );
+            }
+        }
 
         // Compute hash
         let hash = Self::compute_entry_hash(&entry)?;
@@ -613,7 +687,8 @@ impl AuditLogger {
         // Update chain head ONLY after successful file write.
         // If the write fails, the in-memory hash must not advance,
         // otherwise the chain diverges from what's on disk.
-        *last_hash_guard = Some(hash.clone());
+        chain_head.last_hash = Some(hash.clone());
+        chain_head.last_timestamp = Some(entry.timestamp.clone());
 
         // Append leaf hash to Merkle tree (if enabled)
         if let Some(ref merkle) = self.merkle_tree {
