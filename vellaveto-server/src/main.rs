@@ -1950,7 +1950,7 @@ async fn cmd_check(
     no_best_practices: bool,
     no_security_checks: bool,
 ) -> Result<()> {
-    use vellaveto_config::validation::PolicyValidator;
+    use vellaveto_config::validation::{PolicyValidator, ValidationCategory, ValidationFinding};
 
     // Load the configuration
     let policy_config = PolicyConfig::load_file(&config)
@@ -1969,7 +1969,35 @@ async fn cmd_check(
     }
 
     // Run validation
-    let result = validator.validate(&policy_config);
+    let mut result = validator.validate(&policy_config);
+
+    // Compile the policies with the same call `cmd_serve` makes at startup.
+    //
+    // The validator checks schema, semantics, security and best practices, but
+    // it never compiled anything — so a config the server refuses to start with
+    // could pass `check` with "0 errors" and exit 0. That is the worst possible
+    // direction for this tool to be wrong in: `check` exists to be trusted in
+    // CI and before a deploy. `examples/presets/devops-agent.toml` shipped
+    // broken for exactly this reason (issue #407) — it used an unknown
+    // constraint operator, which only the compiler rejects.
+    //
+    // Compiling here rather than reimplementing the compiler's rules is the
+    // point: a second implementation of "valid" is how the two drifted apart.
+    let policies = policy_config.to_policies();
+    if let Err(compile_errors) = PolicyEngine::with_policies(false, &policies) {
+        for e in &compile_errors {
+            result.findings.push(
+                ValidationFinding::error("POLICY_COMPILE", &e.reason)
+                    .at(&e.policy_id)
+                    .with_category(ValidationCategory::Semantic)
+                    .with_suggestion(
+                        "The server refuses to start on this policy. Fix it before deploying.",
+                    ),
+            );
+        }
+        result.summary.errors = result.summary.errors.saturating_add(compile_errors.len());
+        result = result.finalize();
+    }
 
     // Output results
     if format == "json" {
@@ -1980,7 +2008,6 @@ async fn cmd_check(
         println!("{}", result.to_text());
 
         // Also show policy summary
-        let policies = policy_config.to_policies();
         println!("\nPolicies loaded: {}", policies.len());
         for (i, p) in policies.iter().enumerate() {
             println!(
