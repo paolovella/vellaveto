@@ -53,6 +53,8 @@ pub struct A2aListenerState {
     require_agent_card: bool,
     audit: Arc<AuditLogger>,
     client: reqwest::Client,
+    /// Cap on the upstream response body, from `a2a.max_message_size`.
+    max_message_size: usize,
 }
 
 impl std::fmt::Debug for A2aListenerState {
@@ -146,8 +148,13 @@ impl A2aListenerState {
             ..Default::default()
         };
 
+        // No redirect following, for the same reason the card fetcher refuses
+        // it: the upstream is the one host an operator vetted, and a redirect
+        // would hand a request that has already cleared policy and DLP to a
+        // host nobody vetted, then return that host's response to the client.
         let client = reqwest::Client::builder()
             .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|e| format!("failed to build A2A upstream client: {e}"))?;
 
@@ -158,6 +165,7 @@ impl A2aListenerState {
             require_agent_card: cfg.require_agent_card,
             audit,
             client,
+            max_message_size: cfg.max_message_size,
         })
     }
 }
@@ -307,7 +315,18 @@ async fn handle_a2a(State(state): State<Arc<A2aListenerState>>, body: Bytes) -> 
         Ok(response) => {
             let status =
                 StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
-            match response.json::<Value>().await {
+            // Bounded read: `json()` would buffer whatever the upstream sends.
+            // The request direction is already capped by `max_message_size`;
+            // the response direction gets the same cap rather than trusting a
+            // host that may itself be compromised.
+            let body = match read_capped(response, state.max_message_size).await {
+                Ok(body) => body,
+                Err(e) => {
+                    tracing::warn!("A2A upstream body rejected: {}", e);
+                    return upstream_error();
+                }
+            };
+            match serde_json::from_slice::<Value>(&body) {
                 Ok(payload) => (status, Json(payload)).into_response(),
                 Err(e) => {
                     tracing::warn!("A2A upstream returned an unreadable body: {}", e);
@@ -321,6 +340,31 @@ async fn handle_a2a(State(state): State<Arc<A2aListenerState>>, body: Bytes) -> 
             upstream_error()
         }
     }
+}
+
+/// Read a response body, refusing to buffer more than `max_bytes`.
+///
+/// Streams and counts rather than trusting `Content-Length`, which the sender
+/// controls independently of what it actually sends. Mirrors the card
+/// fetcher's `read_capped_body`.
+async fn read_capped(response: reqwest::Response, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut response = response;
+    let mut body = Vec::new();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("failed reading upstream body: {e}"))?
+    {
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(format!(
+                "upstream response exceeds max_message_size ({max_bytes} bytes)"
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+
+    Ok(body)
 }
 
 /// Generic upstream failure response — no upstream detail reaches the client.
@@ -505,5 +549,38 @@ mod tests {
     async fn test_malformed_json_is_rejected() {
         let (status, _) = post_body(&listener_config(false), "this is not json").await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    /// Build a `reqwest::Response` over a fixed body, without a live server.
+    fn response_with_body(body: Vec<u8>) -> reqwest::Response {
+        reqwest::Response::from(
+            axum::http::Response::builder()
+                .status(200)
+                .body(body)
+                .expect("response"),
+        )
+    }
+
+    #[tokio::test]
+    async fn test_upstream_body_within_cap_is_read() {
+        let body = read_capped(response_with_body(vec![b'x'; 64]), 128)
+            .await
+            .expect("body within the cap is read");
+        assert_eq!(body.len(), 64);
+    }
+
+    /// The request direction was already capped by `max_message_size`; before
+    /// this, the response direction was not — `json()` buffered whatever the
+    /// upstream sent. A compromised upstream could exhaust proxy memory with a
+    /// single reply.
+    #[tokio::test]
+    async fn test_oversized_upstream_body_is_rejected() {
+        let err = read_capped(response_with_body(vec![b'x'; 4096]), 128)
+            .await
+            .expect_err("body over the cap must be refused");
+        assert!(
+            err.contains("max_message_size"),
+            "error should name the bound that rejected it, got: {err}"
+        );
     }
 }
