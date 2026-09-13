@@ -1,8 +1,8 @@
 {
   "version": "7.0.0",
-  "rustTests": 13051,
+  "rustTests": 13053,
   "sdkTests": 977,
-  "totalTests": 14028,
+  "totalTests": 14030,
   "verusItems": 1046,
   "kaniHarnesses": 124,
   "tlaSpecs": 13,
