@@ -35,6 +35,18 @@ jobs:
           cargo install clippy-sarif --version 0.8.0 --locked
           cargo install sarif-fmt --version 0.8.0 --locked
 
+      # Required by --all-features below: it enables `grpc`, so
+      # vellaveto-http-proxy's build.rs compiles proto/mcp/v1/mcp.proto via
+      # prost, which shells out to protoc. Without this the build script dies
+      # ("Could not find `protoc`") before clippy lints anything — and because
+      # the clippy step is continue-on-error, the run still uploads a SARIF,
+      # one built from compiler errors rather than lints. ci.yml installs
+      # protoc for the same reason.
+      - name: Install protobuf compiler
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
+
       - name: Run rust-clippy
         id: clippy
         run: |
