@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A2A Agent Card signature enforcement now runs.** `CLAUDE.md` listed
+  "Agent Card Ed25519 signature enforcement" as shipped, but
+  `AgentCardSignatureVerifier::verify_card` had zero call sites,
+  `A2aProxyService` was never constructed outside its own module, nothing ever
+  fetched an Agent Card, and no configuration surface could supply a trusted
+  signing key — so the trust store was always empty and no card could have
+  verified even if something had tried.
+
+  - `A2aSignatureConfig` and `TrustedAgentKey` (`vellaveto-config/src/a2a.rs`):
+    trusted keys, enforcement toggles, and validation that rejects duplicate
+    key IDs and a configuration that would deny every request.
+  - `AgentCardFetcher` (`vellaveto-mcp/src/a2a/fetch.rs`): the missing
+    ingestion path — SSRF-validate, fetch, verify the detached signature,
+    parse, validate, injection-scan, and cache only on success. Fail-closed
+    throughout; no redirects; body read against a cap rather than trusting
+    `Content-Length`.
+  - A2A listener (`vellaveto-http-proxy/src/a2a_listener.rs`): binds
+    `a2a.listen_addr`, verifies the upstream's card, runs the existing policy,
+    DLP, injection, shadow-agent and circuit-breaker checks, and forwards only
+    if both pass. Denials are audited with an ACIS envelope on transport
+    `"a2a"`.
+
+  Scope, stated plainly: enforcement runs on the A2A listener only. The stdio
+  relay does not verify Agent Cards. The `a2a` feature is off by default, and
+  starting with `a2a.enabled` set while compiled without it is now a hard
+  error rather than a silent no-op.
+
+  Signature carriage is detached, in `x-agent-card-signature` and
+  `x-agent-card-claims` response headers, because `AgentCard` is
+  `deny_unknown_fields` and has no signature field. This is a protocol choice
+  the repository had not previously fixed.
 ### Changed
 
 - **MCPSEC: availability axis added, and the reference result republished from a

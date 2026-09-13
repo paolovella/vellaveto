@@ -11,7 +11,8 @@ Handles MCP-specific security concerns between agents and their tools:
 - **Tool registry** - topology-aware tool verification with Levenshtein suggestions
 - **Semantic guardrails** - output schema validation and behavioral constraints
 - **Multimodal inspection** - image and document content scanning
-- **A2A hardening** - Agent Card signature enforcement, DPoP token binding
+- **A2A hardening** - Agent Card signature verification and ingestion (`a2a` feature; enforced by the
+  A2A listener in `vellaveto-http-proxy`, not by the stdio relay), DPoP token binding
 - **MCP 2025-11-25 / 2026-07-28 adapters** - version-gated wire
   normalization into canonical policy and audit requests
 - **Typed `_meta` ingestion** - bounded trace context parsing, protocol-version

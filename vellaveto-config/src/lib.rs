@@ -137,7 +137,7 @@ pub use rag_defense_config::{
 };
 
 // Re-exports from Phase 16.6 split submodules
-pub use a2a::A2aConfig;
+pub use a2a::{A2aConfig, A2aSignatureConfig, TrustedAgentKey};
 pub use abac::AbacConfig;
 pub use acis::{AcisConfig, TrustedRequestSignerConfig};
 pub use audit_store::AuditStoreConfig;
