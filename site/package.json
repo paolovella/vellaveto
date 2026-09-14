@@ -9,8 +9,8 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^7.1.6",
-    "postcss": "^8.5.25"
+    "astro": "^7.3.2",
+    "postcss": "^8.5.28"
   },
   "overrides": {
     "esbuild": "0.28.1"
