@@ -12,6 +12,11 @@ OUTPUT="target/evidence/evidence.json"
 DOC_SUMMARY="target/evidence/evidence-summary.md"
 SITE_OUTPUT=""
 CHECK_ONLY=0
+SYNC=0
+
+# Docs carrying the generated block. --check verifies these; --sync writes them.
+# One list so the two directions can never disagree about which files matter.
+EVIDENCE_DOCS=(README.md docs/ASSURANCE_CASE.md formal/README.md)
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -41,6 +46,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --check)
             CHECK_ONLY=1
+            shift
+            ;;
+        --sync)
+            SYNC=1
             shift
             ;;
         *)
@@ -267,6 +276,68 @@ extract_evidence_block() {
     ' "$file" > "$output"
 }
 
+# Write the generated block into each doc, replacing whatever is between the
+# markers. Only the marked region is touched — the surrounding prose is copied
+# through byte for byte, which is the whole point: resolving one of these blocks
+# by restoring a file wholesale (git checkout --ours/--theirs) silently reverts
+# every unrelated edit in it, and has cost this repository a published benchmark
+# figure more than once.
+sync_evidence_block() {
+    local file="$1"
+    local summary="$2"
+    local tmp
+    tmp="$(mktemp)"
+
+    awk -v summary="$summary" '
+        /<!-- VELLAVETO:EVIDENCE:START -->/ {
+            in_block = 1
+            found = 1
+            while ((getline line < summary) > 0) print line
+            close(summary)
+            next
+        }
+        /<!-- VELLAVETO:EVIDENCE:END -->/ { in_block = 0; next }
+        !in_block { print }
+        END { exit(found ? 0 : 1) }
+    ' "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+
+    if cmp -s "$file" "$tmp"; then
+        rm -f "$tmp"
+        return 2
+    fi
+
+    mv "$tmp" "$file"
+    return 0
+}
+
+if [ "$SYNC" -eq 1 ]; then
+    changed=0
+    for doc in "${EVIDENCE_DOCS[@]}"; do
+        set +e
+        sync_evidence_block "$doc" "$DOC_SUMMARY"
+        rc=$?
+        set -e
+        case "$rc" in
+            0) echo "synced: $doc"; changed=$((changed + 1)) ;;
+            2) ;;
+            *)
+                echo "FAIL: $doc missing VELLAVETO:EVIDENCE generated block" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ -n "$SITE_OUTPUT" ] && ! cmp -s "$site_expected" "$SITE_OUTPUT"; then
+        cp "$site_expected" "$SITE_OUTPUT"
+        echo "synced: $SITE_OUTPUT"
+        changed=$((changed + 1))
+    fi
+
+    if [ "$changed" -eq 0 ]; then
+        echo "evidence blocks already in sync"
+    fi
+fi
+
 if [ "$CHECK_ONLY" -eq 1 ]; then
     for field in git_sha version rust_tests sdk_tests total_tests verus_items kani_harnesses tla_specs lean_theorems coq_theorems alloy_assertions formal_evidence_items ci_run_url generated_at; do
         if ! contains_text "\"$field\"" "$OUTPUT"; then
@@ -275,7 +346,7 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
         fi
     done
 
-    for doc in README.md docs/ASSURANCE_CASE.md formal/README.md; do
+    for doc in "${EVIDENCE_DOCS[@]}"; do
         tmp="$(mktemp)"
         if ! extract_evidence_block "$doc" "$tmp"; then
             echo "FAIL: $doc missing VELLAVETO:EVIDENCE generated block" >&2

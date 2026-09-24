@@ -72,8 +72,21 @@ All three must pass before submitting changes.
    cargo test --workspace
    cargo clippy --workspace
    cargo fmt --check
+   make evidence-check
    ```
-5. Submit a pull request with a clear description
+5. If `make evidence-check` fails because you added or removed tests, run:
+   ```bash
+   make evidence-sync
+   ```
+   It rewrites the generated `VELLAVETO:EVIDENCE` block in `README.md`,
+   `docs/ASSURANCE_CASE.md`, `formal/README.md` and `site/src/data/evidence.json`
+   from the manifest, and touches nothing outside the markers. Commit the result.
+
+   Do not hand-edit those blocks, and when one of them conflicts during a merge,
+   do not resolve it with `git checkout --ours` or `--theirs` — either restores
+   that side's whole file and silently drops the other side's unrelated edits.
+   Clear the conflict markers in place, then run `make evidence-sync`.
+6. Submit a pull request with a clear description
 
 ## Release Checklist
 
