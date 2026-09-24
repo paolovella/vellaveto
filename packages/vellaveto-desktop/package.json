@@ -21,8 +21,8 @@
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
     "autoprefixer": "^10",
-    "esbuild": "^0.28.1",
-    "postcss": "^8.5.25",
+    "esbuild": "^0.28.2",
+    "postcss": "^8.5.28",
     "tailwindcss": "^4",
     "typescript": "^7",
     "vite": "^8"
