@@ -112,6 +112,10 @@ bench-quick: ## Run quick benchmark sanity check
 evidence: ## Generate the canonical evidence manifest
 	bash scripts/generate-evidence-manifest.sh --output $(EVIDENCE_FILE) --site-output site/src/data/evidence.json
 
+.PHONY: evidence-sync
+evidence-sync: ## Write the generated evidence block into the docs that carry it
+	bash scripts/generate-evidence-manifest.sh --output $(EVIDENCE_FILE) --site-output site/src/data/evidence.json --sync
+
 .PHONY: evidence-check
 evidence-check: ## Validate the canonical evidence manifest schema
 	bash scripts/generate-evidence-manifest.sh --output $(EVIDENCE_FILE) --check
