@@ -9451,3 +9451,239 @@ fn test_load_file_rejects_symlink() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ═══════════════════════════════════════════════════════
+// A2A Agent Card signature enforcement config
+// ═══════════════════════════════════════════════════════
+
+/// A syntactically valid hex-encoded Ed25519 public key (32 bytes).
+const TEST_PUBKEY_HEX: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
+fn test_trusted_key(key_id: &str) -> crate::a2a::TrustedAgentKey {
+    crate::a2a::TrustedAgentKey {
+        key_id: key_id.to_string(),
+        public_key: TEST_PUBKEY_HEX.to_string(),
+        issuer: "https://agent.example.com".to_string(),
+    }
+}
+
+#[test]
+fn test_a2a_signature_defaults_are_fail_closed() {
+    let sig = crate::a2a::A2aSignatureConfig::default();
+    assert!(sig.enabled, "signature enforcement must default to on");
+    assert!(
+        sig.require_card_hash_match,
+        "card hash matching must default to on"
+    );
+    assert!(sig.trusted_keys.is_empty());
+    assert!(sig.validate().is_ok());
+}
+
+#[test]
+fn test_a2a_signature_rejects_duplicate_key_id() {
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![test_trusted_key("dup"), test_trusted_key("dup")],
+        ..Default::default()
+    };
+    let err = sig.validate().unwrap_err();
+    assert!(
+        err.contains("duplicate key_id") && err.contains("dup"),
+        "expected duplicate key_id error, got: {err}"
+    );
+}
+
+#[test]
+fn test_a2a_signature_rejects_wrong_length_public_key() {
+    let mut key = test_trusted_key("k1");
+    key.public_key = "0123456789abcdef".to_string(); // valid hex, only 8 bytes
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key],
+        ..Default::default()
+    };
+    let err = sig.validate().unwrap_err();
+    assert!(
+        err.contains("public_key invalid") && err.contains("32 bytes"),
+        "expected public key length error, got: {err}"
+    );
+}
+
+#[test]
+fn test_a2a_signature_rejects_non_hex_public_key() {
+    let mut key = test_trusted_key("k1");
+    // Right length, but 'z' and 'q' are not hex digits.
+    key.public_key = "z75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511q".to_string();
+    assert_eq!(key.public_key.len(), 64);
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key],
+        ..Default::default()
+    };
+    let err = sig.validate().unwrap_err();
+    assert!(
+        err.contains("public_key invalid"),
+        "expected hex decode error, got: {err}"
+    );
+}
+
+#[test]
+fn test_a2a_signature_rejects_all_zeros_public_key() {
+    // An all-zeros key is cryptographically invalid; reusing the shared
+    // validator is what catches it, and it would otherwise sit in the trust
+    // store looking legitimate.
+    let mut key = test_trusted_key("k1");
+    key.public_key = "0".repeat(64);
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key],
+        ..Default::default()
+    };
+    let err = sig.validate().unwrap_err();
+    assert!(
+        err.contains("all zeros"),
+        "expected all-zeros key rejection, got: {err}"
+    );
+}
+
+#[test]
+fn test_a2a_signature_rejects_empty_key_id_and_issuer() {
+    let mut key = test_trusted_key("");
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key.clone()],
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("empty key_id"));
+
+    key = test_trusted_key("k1");
+    key.issuer = String::new();
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key],
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("empty issuer"));
+}
+
+#[test]
+fn test_a2a_signature_rejects_dangerous_chars_in_key_fields() {
+    let mut key = test_trusted_key("key\u{200B}id");
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key.clone()],
+        ..Default::default()
+    };
+    assert!(sig
+        .validate()
+        .unwrap_err()
+        .contains("control or format characters"));
+
+    key = test_trusted_key("k1");
+    key.issuer = "https://evil\u{200B}.example.com".to_string();
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: vec![key],
+        ..Default::default()
+    };
+    assert!(sig
+        .validate()
+        .unwrap_err()
+        .contains("control or format characters"));
+}
+
+#[test]
+fn test_a2a_signature_rejects_out_of_range_lifetimes() {
+    let sig = crate::a2a::A2aSignatureConfig {
+        max_token_lifetime_secs: 0,
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("must be > 0"));
+
+    let sig = crate::a2a::A2aSignatureConfig {
+        max_token_lifetime_secs: 86_401,
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("24 hours"));
+
+    // Skew is bounded far tighter than lifetime: it widens the window in which
+    // an already-expired card is still accepted.
+    let sig = crate::a2a::A2aSignatureConfig {
+        clock_skew_secs: 301,
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("5 minutes"));
+}
+
+#[test]
+fn test_a2a_signature_rejects_too_many_trusted_keys() {
+    let sig = crate::a2a::A2aSignatureConfig {
+        trusted_keys: (0..65)
+            .map(|i| test_trusted_key(&format!("k{i}")))
+            .collect(),
+        ..Default::default()
+    };
+    assert!(sig.validate().unwrap_err().contains("exceeds maximum"));
+}
+
+#[test]
+fn test_a2a_enforcement_without_trusted_keys_is_a_config_error() {
+    // Enforcement on with no keys can never verify a card, so every request
+    // would be denied. Fail-closed, but indistinguishable from an outage —
+    // so it must be rejected at load, not discovered in production.
+    let config = crate::a2a::A2aConfig {
+        enabled: true,
+        require_agent_card: true,
+        ..Default::default()
+    };
+    let err = config.validate().unwrap_err();
+    assert!(
+        err.contains("trusted_keys is empty") && err.contains("every request would be denied"),
+        "expected empty-trusted-keys error, got: {err}"
+    );
+}
+
+#[test]
+fn test_a2a_enforcement_with_a_trusted_key_validates() {
+    let config = crate::a2a::A2aConfig {
+        enabled: true,
+        require_agent_card: true,
+        signature: crate::a2a::A2aSignatureConfig {
+            trusted_keys: vec![test_trusted_key("agent-prod-2026")],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn test_a2a_disabled_listener_does_not_require_trusted_keys() {
+    // a2a.enabled is false by default, so the stricter check must not fire for
+    // deployments that never run the A2A listener.
+    let config = crate::a2a::A2aConfig::default();
+    assert!(!config.enabled);
+    assert!(config.validate().is_ok());
+}
+
+#[test]
+fn test_a2a_signature_config_roundtrips_through_toml() {
+    let config = crate::a2a::A2aConfig {
+        enabled: true,
+        require_agent_card: true,
+        signature: crate::a2a::A2aSignatureConfig {
+            trusted_keys: vec![test_trusted_key("agent-prod-2026")],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let toml_str = toml::to_string(&config).expect("serialize");
+    let parsed: crate::a2a::A2aConfig = toml::from_str(&toml_str).expect("deserialize");
+    assert_eq!(parsed, config);
+    assert!(parsed.validate().is_ok());
+}
+
+#[test]
+fn test_a2a_signature_rejects_unknown_fields() {
+    let toml_str = r#"
+        enabled = true
+        max_token_lifetime_secs = 3600
+        clock_skew_secs = 60
+        require_card_hash_match = true
+        surprise = "field"
+    "#;
+    let parsed: Result<crate::a2a::A2aSignatureConfig, _> = toml::from_str(toml_str);
+    assert!(parsed.is_err(), "deny_unknown_fields must reject extras");
+}
