@@ -9,7 +9,7 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "astro": "^7.3.2",
+    "astro": "^7.3.5",
     "postcss": "^8.5.28"
   },
   "overrides": {
