@@ -75,8 +75,15 @@ impl PedersenCommitter {
         // Convert entry hash to a scalar (reduce mod group order)
         let entry_scalar = Scalar::from_bytes_mod_order(*entry_hash);
 
-        // Generate random blinding factor
-        let blinding = Scalar::random(&mut rand_core_06::OsRng);
+        // Generate random blinding factor.
+        //
+        // curve25519-dalek 5 requires rand 0.10's `CryptoRng`, which rand_core
+        // 0.6's `OsRng` cannot implement — it is a type from a different crate
+        // version. `rand::rng()` is a ChaCha12 CSPRNG seeded from the operating
+        // system and periodically reseeded, so the blinding factor is still
+        // drawn from OS entropy. It is infallible, so this stays free of the
+        // `expect()` that the fallible `OsRng` path would have needed.
+        let blinding = Scalar::random(&mut rand::rng());
 
         // C = entry_hash * G + blinding * H
         let commitment = entry_scalar * RISTRETTO_BASEPOINT_POINT + blinding * self.h;
