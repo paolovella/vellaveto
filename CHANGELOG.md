@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `x-agent-card-claims` response headers, because `AgentCard` is
   `deny_unknown_fields` and has no signature field. This is a protocol choice
   the repository had not previously fixed.
+- **`make evidence-sync`.** The evidence manifest could be generated
+  (`make evidence`) and verified (`make evidence-check`), but nothing wrote the
+  generated block back into the four files that carry it, so a test-count change
+  meant hand-editing `README.md`, `docs/ASSURANCE_CASE.md`, `formal/README.md`
+  and `site/src/data/evidence.json` or knowing an undocumented incantation.
+  `--sync` closes that loop: it replaces only the text between the
+  `VELLAVETO:EVIDENCE` markers and copies the surrounding prose through
+  unchanged, is idempotent, and fails loudly if a doc has lost its block.
+
+  The prose guarantee is the point. Resolving one of these conflicts by
+  restoring a file wholesale — `git checkout --ours` or `--theirs` — reverts
+  every unrelated edit in it, which twice silently reverted the published MCPSEC
+  score on `main` before it was caught. `CONTRIBUTING.md` now says so, and
+  points at this target instead.
+
 ### Changed
 
 - **MCPSEC: availability axis added, and the reference result republished from a

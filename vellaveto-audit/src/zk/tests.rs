@@ -48,7 +48,7 @@ fn test_pedersen_verify_rejects_wrong_blinding() {
     let entry_hash = [0x42u8; 32];
 
     let (commitment, _blinding) = committer.commit(&entry_hash).unwrap();
-    let wrong_blinding = Scalar::random(&mut rand_core_06::OsRng);
+    let wrong_blinding = Scalar::random(&mut rand::rng());
     assert!(!committer.verify(&commitment, &entry_hash, &wrong_blinding));
 }
 
