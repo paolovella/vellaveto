@@ -658,11 +658,11 @@ version = "0.1.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.enum-ordinalize]]
-version = "4.4.1"
+version = "4.3.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.enum-ordinalize-derive]]
-version = "4.4.1"
+version = "4.3.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.equivalent]]
@@ -838,7 +838,7 @@ version = "0.10.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.granit-parser]]
-version = "0.0.7"
+version = "0.0.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.group]]
@@ -1114,23 +1114,23 @@ version = "1.1.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.kube]]
-version = "4.2.0"
+version = "4.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.kube-client]]
-version = "4.2.0"
+version = "4.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.kube-core]]
-version = "4.2.0"
+version = "4.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.kube-derive]]
-version = "4.2.0"
+version = "4.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.kube-runtime]]
-version = "4.2.0"
+version = "4.0.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.lazy_static]]
@@ -1806,7 +1806,7 @@ version = "1.0.229"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde-saphyr]]
-version = "0.0.29"
+version = "0.0.27"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde-value]]
