@@ -3135,12 +3135,13 @@ mod tests {
     // ═══════════════════════════════════════════════════════════════
 
     fn make_argon2_hash(secret: &str) -> String {
-        use argon2::password_hash::rand_core::OsRng;
-        use argon2::password_hash::SaltString;
         use argon2::{Argon2, PasswordHasher};
-        let salt = SaltString::generate(&mut OsRng);
+        // argon2 0.6: `hash_password` takes only the password and generates a
+        // random salt of the recommended length itself, so the explicit
+        // SaltString/OsRng dance the 0.5 API required is gone. The salt is still
+        // random per call — this does not weaken the fixtures.
         Argon2::default()
-            .hash_password(secret.as_bytes(), &salt)
+            .hash_password(secret.as_bytes())
             .expect("hash password")
             .to_string()
     }
