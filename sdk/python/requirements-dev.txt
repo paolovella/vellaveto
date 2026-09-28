@@ -167,9 +167,9 @@ jsonpointer==3.1.1 \
 langchain-core==1.5.3 ; python_version >= "3.10" \
     --hash=sha256:48b56fa580277209594dd7baf837f5b9a2a3651613f34ff9fb1728b429df015f \
     --hash=sha256:a56457ac444fef41e9404443c187f0ecea708d36e816ea4ba9573c027f7d1a2d
-langsmith==0.8.18 ; python_version >= "3.10" \
-    --hash=sha256:32dde9c0e67e053e0fb738921fc8ced768af7b8fa83d7a0e3fd63597cf8776dd \
-    --hash=sha256:3940183349993faef48e6c7d08e4822ee9cefd906b362d0e3c2d650314d2f282
+langsmith==0.14.0 ; python_version >= "3.10" \
+    --hash=sha256:1a89e52c24edd6f4c24d8cfb32857814ceb5b9bec344a2850e86ab38475de362 \
+    --hash=sha256:294a02addc2358fab390156b74fa942e2dd40b711f6507c5f26b5c208cc89e15
 librt==0.14.0 \
     --hash=sha256:04f1ece0f80171c4cfef795fa7bf4a75ffe79ec69cc715027d690c8c9b6166fc \
     --hash=sha256:0660dce4717a345319824ae99bc9036ad887ba5a189422a8c6431bf63d2947c4 \
