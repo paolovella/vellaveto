@@ -53,7 +53,7 @@ git checkout v6.0.0
 git submodule update --init
 
 # 2. Build with the same toolchain and trim-paths
-RUSTFLAGS="-Ctrim-paths=all" rustup run 1.88.0 cargo build --release --locked -p vellaveto-server
+RUSTFLAGS="-Ctrim-paths=all" rustup run 1.89.0 cargo build --release --locked -p vellaveto-server
 
 # 3. Compare SHA-256
 sha256sum target/release/vellaveto
