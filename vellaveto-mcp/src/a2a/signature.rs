@@ -62,10 +62,10 @@ use super::error::A2aError;
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Maximum length of a raw signature string (base64-encoded).
-const MAX_SIGNATURE_LENGTH: usize = 4096;
+pub(crate) const MAX_SIGNATURE_LENGTH: usize = 4096;
 
 /// Maximum length of the signed payload (Agent Card JSON).
-const MAX_SIGNED_PAYLOAD_SIZE: usize = 1_048_576; // 1 MB
+pub(crate) const MAX_SIGNED_PAYLOAD_SIZE: usize = 1_048_576; // 1 MB
 
 /// Maximum number of trusted signing keys.
 const MAX_TRUSTED_KEYS: usize = 100;
