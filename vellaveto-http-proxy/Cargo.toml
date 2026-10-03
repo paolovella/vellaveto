@@ -16,6 +16,7 @@ default = []
 grpc = ["tonic", "tonic-prost", "prost", "prost-types", "tonic-health", "tonic-build", "tonic-prost-build", "tokio-util", "tokio-stream"]
 discovery = ["vellaveto-mcp/discovery"]
 projector = ["vellaveto-mcp/projector"]
+a2a = ["vellaveto-mcp/a2a"]
 
 [lib]
 name = "vellaveto_http_proxy"
