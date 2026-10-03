@@ -20,7 +20,7 @@ actionlint-checksum ─┐
                      │                ├─ Feature Matrix    │
                      │                ├─ Fuzz Targets      │
                      │                └─ Types Contract    │
-MSRV (1.88.0) ──────┘                                     │
+MSRV (1.89.0) ──────┘                                     │
 Coq Formal Proofs ────────────────────────────────────────┘
 Security Audit ────────────────────────────────────────────┘
 Supply Chain Audit ────────────────────────────────────────┘
@@ -78,12 +78,12 @@ Common offenders:
 - `needless_borrow` — `&foo` where `foo` is already a reference
 - `manual_contains` — use `.contains()` instead of `.iter().any(|x| x == &val)`
 
-### 2. MSRV (1.88.0)
+### 2. MSRV (1.89.0)
 
-Compiles the workspace with Rust 1.88.0. If you use a language feature or
+Compiles the workspace with Rust 1.89.0. If you use a language feature or
 stdlib API from a newer Rust version, this breaks.
 
-**Local check:** `rustup run 1.88.0 cargo check --workspace --locked`
+**Local check:** `rustup run 1.89.0 cargo check --workspace --locked`
 
 ### 3. Feature Gates
 

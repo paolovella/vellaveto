@@ -16,13 +16,7 @@ name = "vellaveto-operator"
 path = "src/main.rs"
 
 [dependencies]
-# Held at =4.0.0 deliberately. kube 4.2.0 declares rust-version 1.89.0, which
-# would raise this workspace's MSRV above the 1.88.0 it promises in the root
-# Cargo.toml and gates in CI. 4.0.0 is the newest 4.x that still builds on
-# 1.88.0, and it already carries the serde-saphyr YAML parser, so the move off
-# the deprecated serde_yaml / unsafe-libyaml pair is kept either way. Lift the
-# pin when the workspace MSRV moves to 1.89 or later.
-kube = { version = "=4.0.0", features = ["runtime", "derive", "client"] }
+kube = { version = "4.2.0", features = ["runtime", "derive", "client"] }
 k8s-openapi = { version = "0.28", features = ["v1_32"] }
 schemars = "1"
 serde = { workspace = true }
