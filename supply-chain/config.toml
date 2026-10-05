@@ -1182,7 +1182,7 @@ version = "0.7.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru]]
-version = "0.18.4"
+version = "0.18.5"
 criteria = "safe-to-deploy"
 
 [[exemptions.lru-slab]]
@@ -2066,7 +2066,7 @@ version = "2.7.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio-rustls]]
-version = "0.26.5"
+version = "0.26.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio-stream]]
