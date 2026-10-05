@@ -164,9 +164,9 @@ jsonpatch==1.33 \
 jsonpointer==3.1.1 \
     --hash=sha256:0b801c7db33a904024f6004d526dcc53bbb8a4a0f4e32bfd10beadf60adf1900 \
     --hash=sha256:8ff8b95779d071ba472cf5bc913028df06031797532f08a7d5b602d8b2a488ca
-langchain-core==1.5.3 ; python_version >= "3.10" \
-    --hash=sha256:48b56fa580277209594dd7baf837f5b9a2a3651613f34ff9fb1728b429df015f \
-    --hash=sha256:a56457ac444fef41e9404443c187f0ecea708d36e816ea4ba9573c027f7d1a2d
+langchain-core==1.6.6 ; python_version >= "3.10" \
+    --hash=sha256:67616d984c085009be2c381c2efd330d32429a58aebab295b4f51b6573964511 \
+    --hash=sha256:d9a71e312ab7443701238750e04a57aefc037c4f1ec82837c8a1609d9a14a9b1
 langsmith==0.8.18 ; python_version >= "3.10" \
     --hash=sha256:32dde9c0e67e053e0fb738921fc8ced768af7b8fa83d7a0e3fd63597cf8776dd \
     --hash=sha256:3940183349993faef48e6c7d08e4822ee9cefd906b362d0e3c2d650314d2f282
