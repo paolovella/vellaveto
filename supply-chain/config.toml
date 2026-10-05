@@ -2582,7 +2582,7 @@ version = "0.57.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.wnaf]]
-version = "0.14.0"
+version = "0.14.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.writeable]]
