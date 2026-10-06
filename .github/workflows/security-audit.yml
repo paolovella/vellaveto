@@ -14,6 +14,14 @@ on:
       - 'Cargo.toml'
       - '**/Cargo.lock'
       - '**/Cargo.toml'
+      # This workflow and the advisory-ignore configs it honours. Without these
+      # a change to the gate itself does not run the gate: the first revision of
+      # this PR edited the audit step and `Security Audit` never fired, so the
+      # change went in unexercised. `surface-ci.yml` already lists itself for
+      # the same reason.
+      - '.github/workflows/security-audit.yml'
+      - '**/.cargo/audit.toml'
+      - '.cargo/audit.toml'
   schedule:
     # Every Monday at 06:00 UTC
     - cron: '0 6 * * 1'

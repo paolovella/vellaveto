@@ -288,7 +288,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The step loops over all three and fails if any fail, so one run reports the
   whole picture rather than stopping at the first bad lockfile. Verified
   non-vacuous by running the new gate against the pre-fix lockfiles, where it
-  exits 1 and names all four advisories.
+  exits 1 and names all four advisories, and verified in CI from the job log,
+  which shows all three lockfiles scanned with matching dependency counts
+  (650, 394, 435).
+
+  `Security Audit` also now lists **itself** and the advisory-ignore configs in
+  its `pull_request` paths. It previously did not, so a change to the gate did
+  not run the gate — the first revision of this change edited the audit step and
+  the workflow never fired, which is how the omission came to light.
+  `surface-ci.yml` already listed itself for the same reason.
 
   **Not extended to `cargo deny`**, deliberately. Its `advisories` check already
   reported `advisories ok` on both extra trees, so covering them adds no
