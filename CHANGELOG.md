@@ -143,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed four redundant `_requested_by` session lookups in the gRPC service that
   carried `SECURITY` comments but were dead — `create_pending_approval_with_context`
   derives the requester itself. Self-approval prevention was never affected.
+- Dropped the `profile: minimal` input from the three workflows that still passed
+  it to `dtolnay/rust-toolchain` (`security-audit`, `canary-freshness`,
+  `dependency-monitor`). The pinned master revision no longer accepts it and
+  every run logged `Unexpected input(s) 'profile'`; the input was silently
+  ignored, so this changes no behaviour and only clears the warning.
 
 ### Security
 
@@ -171,6 +176,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so it can only be applied where the peer has negotiated support.
 - `CLAUDE.md` refreshed from 6.1.1 to 7.0.0; hand-maintained test and proof
   counts replaced with a pointer to the generated evidence block.
+
 ### Security
 
 - **Task resume replay protection no longer forgets nonces under load**
@@ -187,6 +193,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Expiring nonces would make every captured request replayable by waiting out
   the window — a worse failure than the one being fixed. A time window becomes
   correct only once the request carries a signed timestamp checked against it.
+- **The weekly `cargo audit` gate had been failing for four months, where nobody
+  would see it.** `Security Audit` runs on a Monday `schedule` and nothing else,
+  so its result lands on whichever commit happens to be `main`'s head that
+  morning and never appears on a pull request. It went red on 2026-08-17 and
+  stayed red through 2026-10-05; the 2026-08-10 success and the two failures
+  after it are all the same commit (`85835d82`), which is the tell that the
+  trigger was never repository content.
+
+  The cause was `wnaf 0.14.0` being **yanked** upstream, and CI runs
+  `cargo audit -D warnings`, which promotes a yanked crate to an error. Bumped
+  to `wnaf 0.14.1` — lockfile only, since `primeorder` requires `wnaf ^0.14`
+  and the `primefield` dependency that 0.14.1 adds was already in the tree —
+  with the version-exact cargo-vet exemption refreshed in the same change.
+
+  `cargo-deny` runs on every pull request with `yanked = "deny"` and reported
+  `advisories ok` throughout. It reads the cached crates.io index that
+  `Swatinem/rust-cache` restores, while `cargo audit` refreshes the index
+  itself, so the only gate that can observe a yank was the weekly one. The same
+  staleness makes a local `cargo deny` run unable to reproduce this at all.
+  `Security Audit` now also runs on `pull_request` for changes under
+  `**/Cargo.lock` and `**/Cargo.toml`. The consequence is deliberate: a fresh
+  upstream yank will redden dependency pull requests until the lockfile moves,
+  which is the behaviour that would have caught this in its first week.
+- **Two of the four advisory ignores in `.cargo/audit.toml` described nothing.**
+  All four were stamped "REVIEW BY 2026-06-30" and were overdue.
+  `RUSTSEC-2024-0436` (`paste`) names a crate no longer in the tree at all, and
+  `RUSTSEC-2025-0055` (`tracing-subscriber`) is patched in `>=0.3.20` while the
+  lockfile carries 0.3.23 — both removed, and removing them surfaced no new
+  findings. The two that remain are live and keep their justifications with the
+  review date moved forward: `RUSTSEC-2023-0071` (`rsa`, reachable only through
+  the `sqlx-mysql` metadata path that Postgres-only builds never compile, and
+  upstream lists no fixed version) and `RUSTSEC-2024-0388` (`derivative`,
+  unmaintained, transitive through the opt-in `zk-audit` `ark-*` stack).
+
+  The file stays load-bearing because `deny.toml` sets
+  `unmaintained = "workspace"`, which narrows that class to workspace-declared
+  crates and so skips exactly the transitive case `cargo audit -D warnings`
+  flags. The two tools diverge by configuration on purpose; the ignore list is
+  not redundant with `deny.toml` and should not be reconciled by widening it.
 
 ## [7.0.0] - 2026-08-04
 

@@ -1,6 +1,19 @@
 name: Security Audit
 
 on:
+  # Also run on dependency changes. A yanked crate is only visible to a tool
+  # that refreshes the crates.io index, and the weekly schedule below was the
+  # only such gate — `wnaf 0.14.0` being yanked went unnoticed for four months
+  # because a scheduled red never appears on a pull request.
+  pull_request:
+    paths:
+      # The root pair is listed separately on purpose: `**` matches zero or more
+      # of any character, so `**/Cargo.lock` still requires a literal `/` and
+      # would not match the root lockfile — the one this gate exists for.
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - '**/Cargo.lock'
+      - '**/Cargo.toml'
   schedule:
     # Every Monday at 06:00 UTC
     - cron: '0 6 * * 1'
@@ -29,7 +42,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
         with:
           toolchain: stable
-          profile: minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true

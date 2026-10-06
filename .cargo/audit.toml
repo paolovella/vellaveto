@@ -4,20 +4,21 @@
 [advisories]
 # Keep advisory ignores explicit and time-bounded.
 # Empty by default; add entries only when actively justified.
+#
+# This file is load-bearing even though `deny.toml` also checks advisories:
+# `deny.toml` sets `unmaintained = "workspace"`, which narrows that class to
+# workspace-declared crates, so cargo-deny skips a transitive unmaintained
+# crate that `cargo audit -D warnings` still flags. The two tools diverge by
+# configuration on purpose — do not "reconcile" them by widening deny.toml.
 ignore = [
-  # REVIEW BY 2026-06-30: Advisory is on `rsa` via optional `sqlx-mysql`
+  # REVIEW BY 2027-03-31: Advisory is on `rsa` via optional `sqlx-mysql`
   # metadata path in `sqlx` 0.8.x. Vellaveto enables only Postgres features
   # (`runtime-tokio-rustls`, `postgres`, `json`, `chrono`, `uuid`), so MySQL
-  # code is not compiled in default or postgres-store builds.
+  # code is not compiled in default or postgres-store builds. Upstream has no
+  # patched release (Marvin attack; `rsa` lists no fixed version).
   "RUSTSEC-2023-0071",
-  # REVIEW BY 2026-06-30: Transitive via optional `vellaveto-audit/zk-audit`
+  # REVIEW BY 2027-03-31: Transitive via optional `vellaveto-audit/zk-audit`
   # dependencies (`ark-*`). `zk-audit` is opt-in and excluded from default CI paths.
   # Upstream does not yet expose a compatible fixed release path.
   "RUSTSEC-2024-0388",
-  # REVIEW BY 2026-06-30: Transitive via optional `vellaveto-audit/zk-audit`
-  # dependencies (`ark-*`). `zk-audit` is opt-in and excluded from default CI paths.
-  "RUSTSEC-2024-0436",
-  # REVIEW BY 2026-06-30: Transitive via optional `vellaveto-audit/zk-audit`
-  # dependencies (`ark-*`). `zk-audit` is opt-in and excluded from default CI paths.
-  "RUSTSEC-2025-0055",
 ]

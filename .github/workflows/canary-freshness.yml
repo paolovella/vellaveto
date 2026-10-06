@@ -65,7 +65,6 @@ jobs:
         if: steps.presence.outputs.published == 'true'
         with:
           toolchain: stable
-          profile: minimal
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         if: steps.presence.outputs.published == 'true'
