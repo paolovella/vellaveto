@@ -1,0 +1,29 @@
+# Cargo audit configuration for the desktop app's own lockfile.
+# See https://github.com/rustsec/rustsec/tree/main/cargo-audit
+#
+# This file exists separately from the root `.cargo/audit.toml` on purpose.
+# cargo-audit reads `.cargo/audit.toml` from its working directory only -- the
+# same lockfile audited from the repository root does not pick this up -- so the
+# two entries below stay scoped to the desktop lockfile instead of widening the
+# root workspace's advisory policy, where neither crate appears at all.
+#
+# Both are warnings, not vulnerabilities, and both are pinned by tauri's own
+# dependency tree rather than by anything this repository declares. Neither can
+# move without a tauri major bump: `src-tauri` depends on `tauri` 2, and these
+# arrive transitively beneath it.
+
+[advisories]
+ignore = [
+  # REVIEW BY 2027-03-31: `proc-macro-error` 1.0.4 is unmaintained. It is a
+  # build-time proc-macro helper reached only through tauri's macro crates; it
+  # does not ship in the binary. No fixed release exists -- the crate is
+  # unmaintained, which is the finding -- so this clears only when the
+  # dependents move to `proc-macro-error2` or equivalent.
+  "RUSTSEC-2024-0370",
+  # REVIEW BY 2027-03-31: `glib` 0.18.5 has unsound `Iterator` and
+  # `DoubleEndedIterator` impls for `VariantStrIter`. It comes in beneath
+  # tauri's GTK stack (gtk/gdk/atk 0.18.x), which pins the 0.18 line; moving to
+  # a patched `glib` requires tauri to move its GTK generation. This repository
+  # does not call `VariantStrIter`.
+  "RUSTSEC-2024-0429",
+]

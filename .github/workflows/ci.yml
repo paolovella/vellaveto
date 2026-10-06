@@ -359,8 +359,20 @@ jobs:
       # No GITHUB_TOKEN or `checks: write` needed as a result.
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
+      # All three lockfiles, not just the root one -- see the longer note in
+      # .github/workflows/security-audit.yml. Each is audited from its own
+      # directory so that cargo-audit picks up that directory's
+      # `.cargo/audit.toml` rather than the root's.
       - name: Check for security advisories
-        run: cargo audit
+        run: |
+          set -u
+          rc=0
+          for d in . fuzz packages/vellaveto-desktop/src-tauri; do
+            echo "::group::cargo audit ($d)"
+            (cd "$d" && cargo audit) || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
   # ───────────────────────────────────────────────────────
   # 6. Fuzz target compilation check

@@ -45,9 +45,43 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           cache-on-failure: true
-      - name: Verify lockfile
-        run: cargo metadata --locked --format-version=1 > /dev/null
+      - name: Verify lockfiles
+        run: |
+          set -u
+          rc=0
+          for d in . fuzz packages/vellaveto-desktop/src-tauri; do
+            (cd "$d" && cargo metadata --locked --format-version=1 > /dev/null) || rc=1
+          done
+          exit $rc
       - name: Install cargo-audit
         run: cargo install cargo-audit --version 0.22.2 --locked
+      # Audit every lockfile, not just the root one. `cargo audit` reads only
+      # the lockfile it is pointed at, and this repository has three, so for as
+      # long as this step ran bare at the repository root the desktop app (435
+      # dependencies, shipped) and the fuzz workspace (394) were scanned by
+      # nothing. That hid two CVSS 7.5 advisories in `quick-xml` and one in
+      # `rustls`.
+      #
+      # Each lockfile is audited from its own directory rather than with `-f`
+      # from the root, because cargo-audit reads `.cargo/audit.toml` from its
+      # working directory only. That keeps the desktop app's two unfixable
+      # tauri-pinned warning ignores scoped to its own lockfile instead of
+      # widening root policy -- see src-tauri/.cargo/audit.toml.
+      #
+      # The loop runs all three and fails if any fail, so one run reports the
+      # whole picture instead of stopping at the first bad lockfile.
+      #
+      # Caveat for anyone reading a green run: cargo-audit's yanked-crate check
+      # FAILS OPEN. When the crates.io index is unreachable it prints
+      # "couldn't check if the package is yanked" and still exits 0, so a pass
+      # proves the advisory scan ran, not that the yanked scan did.
       - name: Run cargo audit
-        run: cargo audit -D warnings
+        run: |
+          set -u
+          rc=0
+          for d in . fuzz packages/vellaveto-desktop/src-tauri; do
+            echo "::group::cargo audit ($d)"
+            (cd "$d" && cargo audit -D warnings) || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
