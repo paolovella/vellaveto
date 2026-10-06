@@ -232,6 +232,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crates and so skips exactly the transitive case `cargo audit -D warnings`
   flags. The two tools diverge by configuration on purpose; the ignore list is
   not redundant with `deny.toml` and should not be reconciled by widening it.
+- **Two high-severity advisories in the desktop app, and one in the fuzz
+  workspace, had never been scanned by anything.** The repository has three
+  lockfiles, and every `cargo audit` and `cargo deny` step in CI runs at the
+  repository root with no `working-directory`, while `cargo audit` only reads the
+  lockfile it is pointed at. So `packages/vellaveto-desktop/src-tauri/Cargo.lock`
+  (435 dependencies, a shipped application) and `fuzz/Cargo.lock` (394) were
+  outside advisory scanning entirely. Dependabot *does* update them, so the gap
+  was specifically in advisory scanning rather than in version bumps.
+
+  Fixed in the desktop lockfile:
+
+  - `quick-xml` 0.38.4 → 0.41.0, clearing **RUSTSEC-2026-0194** (quadratic run
+    time when checking a start tag for duplicate attribute names) and
+    **RUSTSEC-2026-0195** (unbounded namespace-declaration allocation in
+    `NsReader`, a memory-exhaustion denial of service). Both are CVSS 7.5 and
+    both are fixed in `>=0.41.0`. The bump is driven entirely by `plist`
+    1.8.0 → 1.10.0: `plist` 1.8.0 requires `quick_xml ^0.38.0` while 1.10.0
+    requires a version in the fixed range, and `tauri` requires `plist ^1`, so
+    no manifest change was needed.
+  - `anyhow` 1.0.102 → 1.0.104, clearing RUSTSEC-2026-0190 (unsoundness in
+    `Error::downcast_mut()`).
+
+  Fixed in the fuzz lockfile: `rustls` 0.23.43 → 0.23.45, clearing
+  **RUSTSEC-2026-0285** (TLS 1.3 handshake messages incorrectly accepted across
+  encryption level boundaries). Both `anyhow` and `rustls` only bring a stale
+  lockfile up to what the root lockfile already carried, so neither version is
+  new to the repository.
+
+  Two warnings in the desktop lockfile are **knowingly left**: `glib` 0.18.5
+  (RUSTSEC-2024-0429, unsound iterator impls) and `proc-macro-error` 1.0.4
+  (RUSTSEC-2024-0370, unmaintained). Both are pinned by tauri's own dependency
+  tree — the GTK stack and a build-time macro crate — and cannot move without a
+  tauri major bump. They are warnings, not vulnerabilities.
 
 ## [7.0.0] - 2026-08-04
 
