@@ -312,6 +312,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cargo-audit's yanked-crate check **fails open**. When the crates.io index is
   unreachable it prints `couldn't check if the package is yanked` and still
   exits 0, so a pass proves the advisory scan ran, not that the yanked scan did.
+- **Five high-severity npm advisories cleared across three packages.** All were
+  transitive with non-major fixes available, so each is a lockfile-only change
+  with no `package.json` touched:
+
+  - `admin-console` and `packages/vellaveto-desktop` — `source-map-js`
+    1.2.1 → 1.2.2, an event-loop denial of service through indexed source-map
+    section offsets.
+  - `site` — the same `source-map-js` bump, plus `http-cache-semantics`
+    4.2.0 → 4.3.0 (`max-stale` handling can disclose cross-user cached
+    responses) and `sharp` 0.35.4 → 0.35.5 for CVE-2026-96889 in its bundled
+    librsvg. The `sharp` bump moves 27 `@img/sharp-*` platform binary packages
+    in lockstep, which is why that lockfile's diff is large; no package was
+    added or removed in any of the three (297, 306 and 153 entries before and
+    after).
+
+  `packages/create-vellaveto` and `vscode-vellaveto` were already clean.
+
+  **`sdk/typescript`'s 20 moderate advisories are knowingly left.** They all
+  trace to one crate: `sprintf-js` 1.0.3, reached through
+  `ts-jest 29 → js-yaml 3.x → argparse 1.x`. Its advisory range is `*` — every
+  published version is affected, so no fixed version exists to move to — and
+  npm's proposed remedies are `ts-jest@27.0.3` and `jest@25.0.0`, both major
+  *downgrades* from the current 29 and 30. The whole chain is `dev: true`:
+  it reaches the test runner only and is never shipped to SDK consumers.
+  Downgrading the test runner by two to five majors to silence a dev-only
+  denial-of-service advisory that has no upstream fix costs more than it buys.
+  This clears when `ts-jest` moves off `js-yaml` 3.x upstream.
 
 ## [7.0.0] - 2026-08-04
 
