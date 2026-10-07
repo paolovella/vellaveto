@@ -265,6 +265,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RUSTSEC-2024-0370, unmaintained). Both are pinned by tauri's own dependency
   tree — the GTK stack and a build-time macro crate — and cannot move without a
   tauri major bump. They are warnings, not vulnerabilities.
+- **`cargo audit` now runs against every lockfile, not just the root one.**
+  `cargo audit` reads only the lockfile it is pointed at, and this repository
+  has three, so for as long as the step ran bare at the repository root the
+  desktop app (435 dependencies, shipped) and the fuzz workspace (394) were
+  scanned by nothing at all. That is what hid the advisories fixed above. Both
+  the weekly `Security Audit` job and the `audit` job in `ci.yml` now iterate
+  over the root, `fuzz/`, and `packages/vellaveto-desktop/src-tauri/`.
+
+  Each lockfile is audited **from its own directory** rather than with `-f` from
+  the repository root, because cargo-audit reads `.cargo/audit.toml` from its
+  working directory only — verified both ways: the desktop lockfile audited from
+  its own directory honours a scoped config, and the same lockfile audited from
+  the root does not see it. That keeps the desktop app's two unfixable
+  tauri-pinned warning ignores in a new
+  `packages/vellaveto-desktop/src-tauri/.cargo/audit.toml`, scoped to that
+  lockfile, instead of widening the root workspace's advisory policy where
+  neither crate appears. The ignore list there is deliberately narrow: it covers
+  `glib` and `proc-macro-error` only, and the `anyhow` advisory fixed above was
+  still correctly denied while it was present.
+
+  The step loops over all three and fails if any fail, so one run reports the
+  whole picture rather than stopping at the first bad lockfile. Verified
+  non-vacuous by running the new gate against the pre-fix lockfiles, where it
+  exits 1 and names all four advisories, and verified in CI from the job log,
+  which shows all three lockfiles scanned with matching dependency counts
+  (650, 394, 435).
+
+  `Security Audit` also now lists **itself** and the advisory-ignore configs in
+  its `pull_request` paths. It previously did not, so a change to the gate did
+  not run the gate — the first revision of this change edited the audit step and
+  the workflow never fired, which is how the omission came to light.
+  `surface-ci.yml` already listed itself for the same reason.
+
+  **Not extended to `cargo deny`**, deliberately. Its `advisories` check already
+  reported `advisories ok` on both extra trees, so covering them adds no
+  vulnerability detection on top of `cargo audit`; what it would add is
+  license and bans policy, and getting there needs two policy decisions
+  unrelated to security — ignoring the license check for unpublished crates (the
+  `vellaveto-fuzz` harness sits outside the root workspace and so cannot use
+  `license.workspace = true`) and allowing `NCSA`, which `libfuzzer-sys` carries
+  from the bundled LLVM libFuzzer sources. Worth doing, but as a license-policy
+  change rather than inside a vulnerability fix.
+
+  One caveat recorded next to the step for anyone reading a green run:
+  cargo-audit's yanked-crate check **fails open**. When the crates.io index is
+  unreachable it prints `couldn't check if the package is yanked` and still
+  exits 0, so a pass proves the advisory scan ran, not that the yanked scan did.
 
 ## [7.0.0] - 2026-08-04
 
