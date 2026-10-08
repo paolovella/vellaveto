@@ -32,10 +32,49 @@ require_cargo_subcommand vet
 
 mkdir -p "${CARGO_HOME_DIR}"
 mkdir -p "${VET_CACHE_DIR}"
+
+# Seed the private CARGO_HOME from the caller's, but only where we have nothing
+# already. The previous form was `cp -a "${HOME}/.cargo/advisory-db"
+# "${CARGO_HOME_DIR}/"`, and `cp -a src dst/` copies *into* an existing
+# destination directory -- so a repeat run nested `advisory-db/advisory-db`,
+# silently, because `2>/dev/null || true` swallowed the evidence.
 if [[ -d "${HOME}/.cargo" ]]; then
-  cp -a "${HOME}/.cargo/registry" "${CARGO_HOME_DIR}/" 2>/dev/null || true
-  cp -a "${HOME}/.cargo/advisory-db" "${CARGO_HOME_DIR}/" 2>/dev/null || true
-  cp -a "${HOME}/.cargo/advisory-dbs" "${CARGO_HOME_DIR}/" 2>/dev/null || true
+  for cached in registry advisory-db advisory-dbs; do
+    if [[ -d "${HOME}/.cargo/${cached}" && ! -e "${CARGO_HOME_DIR}/${cached}" ]]; then
+      cp -a "${HOME}/.cargo/${cached}" "${CARGO_HOME_DIR}/${cached}" 2>/dev/null || true
+    fi
+  done
+fi
+
+# CARGO_HOME_DIR lives under `target/`, which CI caches and prunes
+# (Swatinem/rust-cache lists it in Cache Paths). An advisory database can
+# therefore come back non-empty while no longer being a valid git clone, and
+# neither tool recovers on its own: cargo-audit refuses to clone over it
+# ("Refusing to initialize the non-empty directory") and cargo-deny fails to
+# read FETCH_HEAD. Nothing healed that, so the daily job stayed red until the
+# cache happened to rotate -- the alternating pass/fail in its run history.
+#
+# The two tools use different paths, and an earlier version of this fix that
+# handled only the first would have left half the breakage in place:
+#   cargo-audit -> $CARGO_HOME/advisory-db              (one clone)
+#   cargo-deny  -> $CARGO_HOME/advisory-dbs/<hashed>    (one clone per source)
+# Both are reconstructible by a fetch and hold nothing of the user's, so drop
+# whichever is not a clone and let the tool re-fetch it.
+heal_advisory_clone() {
+  local dir="$1"
+  if [[ -d "${dir}" && ! -d "${dir}/.git" ]]; then
+    echo "Advisory DB at ${dir} is not a git clone; removing so it can be re-fetched."
+    rm -rf "${dir}"
+  fi
+}
+
+heal_advisory_clone "${CARGO_HOME_DIR}/advisory-db"
+if [[ -d "${CARGO_HOME_DIR}/advisory-dbs" ]]; then
+  for advisory_clone in "${CARGO_HOME_DIR}/advisory-dbs"/*; do
+    if [[ -d "${advisory_clone}" ]]; then
+      heal_advisory_clone "${advisory_clone}"
+    fi
+  done
 fi
 
 if [[ "${DEPENDENCY_MONITOR_NO_FETCH:-}" == "1" ]]; then
@@ -51,22 +90,63 @@ echo "  Vet output:        ${VET_TXT}"
 echo "  Duplicates output: ${DUPLICATES_TXT}"
 echo "  Metadata:          ${METADATA_JSON}"
 
+# cargo-audit exits 1 both when it finds advisories and when it cannot fetch its
+# database, so the exit code alone cannot tell "found something" from "never
+# ran". Reporting the second as the first is worse than cosmetic: it trains a
+# reader to discount the one message a real advisory arrives in, and it calls a
+# run whose posture is *unknown* a run that is known-bad.
+#
+# With --json a completed scan leaves parseable JSON carrying a `vulnerabilities`
+# key; a database failure leaves an empty or truncated file. Classify on that.
+audit_report_is_complete() {
+  python3 -c '
+import json, sys
+try:
+    report = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+sys.exit(0 if isinstance(report, dict) and "vulnerabilities" in report else 1)
+' "$1" 2>/dev/null
+}
+
 echo "1/5: cargo audit"
 audit_status=0
+audit_scan_ran=1
 if CARGO_HOME="${CARGO_HOME_DIR}" cargo audit "${AUDIT_FETCH_ARGS[@]}" --json >"${AUDIT_JSON}"; then
   echo "cargo audit: no advisories"
 else
   audit_status=$?
-  echo "cargo audit detected advisories (exit ${audit_status}). Review ${AUDIT_JSON}."
+  if audit_report_is_complete "${AUDIT_JSON}"; then
+    echo "cargo audit detected advisories (exit ${audit_status}). Review ${AUDIT_JSON}."
+  else
+    audit_scan_ran=0
+    echo "cargo audit: SCAN DID NOT RUN (exit ${audit_status}). The advisory database was unavailable, so no advisory was assessed -- this is not a clean result, and not a finding either. See the error above."
+  fi
 fi
 
 echo "2/5: cargo deny --locked check -A duplicate advisories bans sources licenses"
 deny_status=0
-if CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" -A duplicate advisories bans sources licenses | tee "${DENY_JSON}"; then
+deny_scan_ran=1
+# Capture stderr as well. cargo-deny prints its verdict line to stdout on a
+# normal run, but when the advisory database cannot be read it writes the error
+# to stderr and stdout stays empty -- so the old `| tee` saved nothing at all in
+# exactly the case where the artifact is wanted.
+#
+# Classify on the presence of an advisories verdict rather than on matching
+# error text: the message differs by failure mode (CI saw "failed to load any
+# advisories in the database", a local reproduction saw a FETCH_HEAD parse
+# error), whereas a run that reached a conclusion always prints
+# "advisories ok" or "advisories FAILED".
+if CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" -A duplicate advisories bans sources licenses 2>&1 | tee "${DENY_JSON}"; then
   echo "cargo deny: clean"
 else
   deny_status=$?
-  echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
+  if grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}"; then
+    echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
+  else
+    deny_scan_ran=0
+    echo "cargo deny: ADVISORY SCAN DID NOT RUN (exit ${deny_status}). The advisory database could not be loaded, so no advisory was assessed. See ${DENY_JSON}."
+  fi
 fi
 
 echo "3/5: cargo vet --locked"
@@ -155,6 +235,24 @@ else
 fi
 
 echo "Dependency monitoring summary written under ${OUTPUT_DIR}."
+
+# State plainly which advisory scans actually assessed anything. Without this,
+# a reader of the log or the uploaded artifact cannot tell a run that found
+# nothing from a run that looked at nothing.
+echo "Advisory scan coverage this run:"
+if [[ ${audit_scan_ran} -eq 1 ]]; then
+  echo "  cargo audit: completed"
+else
+  echo "  cargo audit: DID NOT RUN - advisory posture for this run is UNKNOWN"
+fi
+if [[ ${deny_scan_ran} -eq 1 ]]; then
+  echo "  cargo deny:  completed"
+else
+  echo "  cargo deny:  advisory check DID NOT RUN - advisory posture for this run is UNKNOWN"
+fi
+
+# A scan that could not run is not a pass, so the job still fails either way.
+# Only the wording and the coverage report above distinguish the two cases.
 final_status=0
 if [[ ${audit_status} -ne 0 || ${deny_status} -ne 0 || ${vet_status} -ne 0 || ${duplicates_status} -ne 0 || ${metadata_status} -ne 0 ]]; then
   final_status=1

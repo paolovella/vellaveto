@@ -339,6 +339,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Downgrading the test runner by two to five majors to silence a dev-only
   denial-of-service advisory that has no upstream fix costs more than it buys.
   This clears when `ts-jest` moves off `js-yaml` 3.x upstream.
+- **The daily dependency monitor was reporting its own failures as security
+  findings.** `scripts/run-dependency-monitor.sh` treated any non-zero exit from
+  `cargo audit` as "advisories detected", but cargo-audit exits 1 both when it
+  finds advisories and when it cannot fetch its advisory database. On 2026-10-08
+  the job printed `cargo audit detected advisories (exit 1)` when **zero
+  advisories had been assessed** — the database was unreadable and the scan never
+  ran. `cargo deny` had the same shape and the same mislabel.
+
+  That is worse than a cosmetic wording bug. A monitor that cries "advisories
+  detected" on every infrastructure hiccup teaches its readers to discount the
+  one message a real advisory would arrive in, and it reports a run whose
+  security posture is *unknown* as a run that is known-bad. The two states need
+  different responses.
+
+  Both scanners are now classified on evidence rather than on the exit code.
+  `cargo audit` runs with `--json`, so a completed scan leaves parseable JSON
+  carrying a `vulnerabilities` key while a database failure leaves an empty file;
+  `cargo deny` always prints an `advisories ok`/`advisories FAILED` verdict when
+  it reaches a conclusion. When that evidence is absent the run now says
+  `SCAN DID NOT RUN ... no advisory was assessed`, and a new end-of-run coverage
+  block states for each scanner whether it completed or whether the posture is
+  UNKNOWN. **The job still fails either way** — a scan that could not run is not
+  a pass; only the wording and the coverage report distinguish the cases.
+  Classification was checked against all three real output shapes, so a genuine
+  finding still reports as a finding.
+
+  The underlying cause is also fixed. `CARGO_HOME` is set under `target/`, which
+  CI caches and prunes, so an advisory database could return non-empty while no
+  longer being a valid git clone — cargo-audit then refuses to clone over it and
+  cargo-deny cannot read `FETCH_HEAD`. Nothing recovered, so the job stayed red
+  until the cache happened to rotate, which is the alternating pass/fail in its
+  history (red on 09-27, 09-29, 09-30, 10-01, 10-04, 10-08; green between, and
+  green on 10-07 against the *same commit* that failed on 10-08). The script now
+  drops an advisory clone that has no `.git` and lets the tool re-fetch it,
+  covering **both** paths, since the two tools disagree on where the database
+  lives: cargo-audit uses `advisory-db`, cargo-deny uses `advisory-dbs/<hashed>`.
+
+  Two smaller bugs in the same script, found while fixing the above:
+  `cp -a "${HOME}/.cargo/advisory-db" "${CARGO_HOME_DIR}/"` copies *into* an
+  existing destination, so repeat runs nested `advisory-db/advisory-db` with the
+  evidence swallowed by `2>/dev/null || true`; and `cargo deny ... | tee`
+  captured only stdout, which is empty in exactly the failure case, so the
+  uploaded artifact held nothing when it was most wanted.
 
 ## [7.0.0] - 2026-08-04
 
