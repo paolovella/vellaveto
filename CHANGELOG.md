@@ -383,6 +383,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   captured only stdout, which is empty in exactly the failure case, so the
   uploaded artifact held nothing when it was most wanted.
 
+  **Follow-up: the heal predicate above was too weak and has been replaced.** The
+  first scheduled run carrying it (2026-10-09) confirmed the reporting half —
+  the log read `SCAN DID NOT RUN ... no advisory was assessed` with the coverage
+  block and no "detected advisories" anywhere — but the heal never fired and the
+  job stayed red on the same error. Gating on `! -d "${dir}/.git"` was the
+  mistake: CI cache pruning leaves the `.git` directory in place while breaking
+  the repository inside it, so the directory still looks like a clone, gix still
+  cannot open it, and cargo-audit falls back to a fresh clone that refuses the
+  non-empty directory. Having a `.git` directory is not the same as being a
+  usable clone.
+
+  The predicate now asks git whether the repository opens
+  (`git -C "${dir}" rev-parse --git-dir`), falling back to the old directory test
+  only when git is unavailable rather than deleting a database it cannot check.
+  And because a precondition check can be wrong a second time, recovery is now
+  also keyed to the failure actually observed: when a scan dies with the
+  signature a stale clone produces, the database is removed and the scan retried
+  **once**. One retry, only on those signatures — a second failure is real and
+  stays red, and a failure that does not match (such as `--no-fetch` with no
+  cached database) is not retried at all.
+
+  Verified against four states, including the one that defeated the first
+  attempt: a `.git`-present-but-unusable clone now heals and both scans complete;
+  a clone that passes the new predicate yet is still refused is recovered by the
+  retry; a valid clone is left untouched across consecutive runs; and an
+  unrecoverable failure still exits non-zero reporting UNKNOWN posture, with no
+  retry loop.
+
 ## [7.0.0] - 2026-08-04
 
 First release since 6.1.1 (2026-03-27). 273 commits.

@@ -60,22 +60,41 @@ fi
 #   cargo-deny  -> $CARGO_HOME/advisory-dbs/<hashed>    (one clone per source)
 # Both are reconstructible by a fetch and hold nothing of the user's, so drop
 # whichever is not a clone and let the tool re-fetch it.
+# The first version of this gated on `! -d "${dir}/.git"`, which was too weak and
+# let the real breakage through: cache pruning leaves the `.git` directory in
+# place while breaking the repository inside it, so the directory still looks
+# like a clone, gix still cannot open it, and cargo-audit falls back to a fresh
+# clone that then refuses the non-empty directory. The scheduled run on
+# 2026-10-09 proved it -- the heal never printed and the job stayed red on the
+# same error. Ask git whether the repository actually opens.
 heal_advisory_clone() {
   local dir="$1"
-  if [[ -d "${dir}" && ! -d "${dir}/.git" ]]; then
-    echo "Advisory DB at ${dir} is not a git clone; removing so it can be re-fetched."
-    rm -rf "${dir}"
+  [[ -d "${dir}" ]] || return 0
+  if command -v git >/dev/null 2>&1; then
+    if git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1; then
+      return 0
+    fi
+  elif [[ -d "${dir}/.git" ]]; then
+    # No git to ask. Fall back to the weaker check rather than deleting a
+    # database that is probably fine.
+    return 0
+  fi
+  echo "Advisory DB at ${dir} is not a usable git clone; removing so it can be re-fetched."
+  rm -rf "${dir}"
+}
+
+heal_all_advisory_clones() {
+  heal_advisory_clone "${CARGO_HOME_DIR}/advisory-db"
+  if [[ -d "${CARGO_HOME_DIR}/advisory-dbs" ]]; then
+    for advisory_clone in "${CARGO_HOME_DIR}/advisory-dbs"/*; do
+      if [[ -d "${advisory_clone}" ]]; then
+        heal_advisory_clone "${advisory_clone}"
+      fi
+    done
   fi
 }
 
-heal_advisory_clone "${CARGO_HOME_DIR}/advisory-db"
-if [[ -d "${CARGO_HOME_DIR}/advisory-dbs" ]]; then
-  for advisory_clone in "${CARGO_HOME_DIR}/advisory-dbs"/*; do
-    if [[ -d "${advisory_clone}" ]]; then
-      heal_advisory_clone "${advisory_clone}"
-    fi
-  done
-fi
+heal_all_advisory_clones
 
 if [[ "${DEPENDENCY_MONITOR_NO_FETCH:-}" == "1" ]]; then
   AUDIT_FETCH_ARGS=(--no-fetch --stale)
@@ -109,18 +128,48 @@ sys.exit(0 if isinstance(report, dict) and "vulnerabilities" in report else 1)
 ' "$1" 2>/dev/null
 }
 
+# A precondition check can be wrong -- the first one was -- so recovery is also
+# keyed to the failure actually observed. When a scan dies with the signature a
+# stale advisory clone produces, drop the database and try once more. One retry
+# only, and only on those signatures: a second failure is real and stays red.
+AUDIT_STALE_DB_SIGNATURE='Refusing to initialize the non-empty directory|couldn.t fetch advisory database'
+DENY_STALE_DB_SIGNATURE='failed to load advisory database|failed to load any advisories'
+
+AUDIT_ERR="${OUTPUT_DIR}/cargo-audit-${TIMESTAMP}.stderr.txt"
+
+run_cargo_audit() {
+  # stdout is the JSON report; stderr is kept so it can be both shown and matched.
+  CARGO_HOME="${CARGO_HOME_DIR}" cargo audit "${AUDIT_FETCH_ARGS[@]}" --json \
+    >"${AUDIT_JSON}" 2>"${AUDIT_ERR}"
+}
+
 echo "1/5: cargo audit"
 audit_status=0
 audit_scan_ran=1
-if CARGO_HOME="${CARGO_HOME_DIR}" cargo audit "${AUDIT_FETCH_ARGS[@]}" --json >"${AUDIT_JSON}"; then
+if run_cargo_audit; then
   echo "cargo audit: no advisories"
 else
   audit_status=$?
-  if audit_report_is_complete "${AUDIT_JSON}"; then
-    echo "cargo audit detected advisories (exit ${audit_status}). Review ${AUDIT_JSON}."
-  else
-    audit_scan_ran=0
-    echo "cargo audit: SCAN DID NOT RUN (exit ${audit_status}). The advisory database was unavailable, so no advisory was assessed -- this is not a clean result, and not a finding either. See the error above."
+  cat "${AUDIT_ERR}" >&2 || true
+  if ! audit_report_is_complete "${AUDIT_JSON}" \
+    && grep -qE "${AUDIT_STALE_DB_SIGNATURE}" "${AUDIT_ERR}" 2>/dev/null; then
+    echo "cargo audit: advisory database looks stale; removing it and retrying once."
+    rm -rf "${CARGO_HOME_DIR}/advisory-db"
+    audit_status=0
+    if run_cargo_audit; then
+      echo "cargo audit: no advisories (after re-fetching the advisory database)"
+    else
+      audit_status=$?
+      cat "${AUDIT_ERR}" >&2 || true
+    fi
+  fi
+  if [[ ${audit_status} -ne 0 ]]; then
+    if audit_report_is_complete "${AUDIT_JSON}"; then
+      echo "cargo audit detected advisories (exit ${audit_status}). Review ${AUDIT_JSON}."
+    else
+      audit_scan_ran=0
+      echo "cargo audit: SCAN DID NOT RUN (exit ${audit_status}). The advisory database was unavailable, so no advisory was assessed -- this is not a clean result, and not a finding either. See the error above."
+    fi
   fi
 fi
 
@@ -137,15 +186,33 @@ deny_scan_ran=1
 # advisories in the database", a local reproduction saw a FETCH_HEAD parse
 # error), whereas a run that reached a conclusion always prints
 # "advisories ok" or "advisories FAILED".
-if CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" -A duplicate advisories bans sources licenses 2>&1 | tee "${DENY_JSON}"; then
+run_cargo_deny() {
+  CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" \
+    -A duplicate advisories bans sources licenses 2>&1 | tee "${DENY_JSON}"
+}
+
+if run_cargo_deny; then
   echo "cargo deny: clean"
 else
   deny_status=$?
-  if grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}"; then
-    echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
-  else
-    deny_scan_ran=0
-    echo "cargo deny: ADVISORY SCAN DID NOT RUN (exit ${deny_status}). The advisory database could not be loaded, so no advisory was assessed. See ${DENY_JSON}."
+  if ! grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}" \
+    && grep -qE "${DENY_STALE_DB_SIGNATURE}" "${DENY_JSON}" 2>/dev/null; then
+    echo "cargo deny: advisory database looks stale; removing it and retrying once."
+    rm -rf "${CARGO_HOME_DIR}/advisory-dbs"
+    deny_status=0
+    if run_cargo_deny; then
+      echo "cargo deny: clean (after re-fetching the advisory database)"
+    else
+      deny_status=$?
+    fi
+  fi
+  if [[ ${deny_status} -ne 0 ]]; then
+    if grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}"; then
+      echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
+    else
+      deny_scan_ran=0
+      echo "cargo deny: ADVISORY SCAN DID NOT RUN (exit ${deny_status}). The advisory database could not be loaded, so no advisory was assessed. See ${DENY_JSON}."
+    fi
   fi
 fi
 
