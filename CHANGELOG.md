@@ -126,6 +126,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON-RPC requests no longer fail closed. A placeholder the session never
   emitted is still refused.
 
+- **CI now builds and tests the Tauri desktop shell.** `surface-ci.yml` built only the
+  npm web shell, and `packages/vellaveto-desktop/src-tauri` is excluded from the root
+  workspace, so `cargo test --workspace` could never reach it — the Rust desktop shell
+  could break with nothing noticing. A new `desktop` job in `ci.yml` compiles it with
+  `--locked` against its own committed lockfile and runs its 7 unit tests, modelled on
+  the existing `fuzz` job for an excluded crate.
+
+  Getting a bare `cargo build` to work there needed two prerequisites that a fresh
+  checkout does not have, both found by compiling the crate rather than by reading the
+  config. First, `tauri.conf.json` declares `bundle.externalBin:
+  ["binaries/vellaveto-proxy"]`, and `tauri_build::build()` resolves that against the
+  host target triple at **build** time, not at bundle time, failing with ``resource path
+  `binaries/vellaveto-proxy-<triple>` doesn't exist``. So the job builds
+  `vellaveto-proxy` from the root workspace and stages it under the suffixed name — the
+  desktop crate has no `vellaveto-*` Cargo dependency but does depend on the root
+  workspace here. Second, `frontendDist` points at a gitignored `../dist`, which
+  `tauri::generate_context!()` panics on at compile time (not, as it first appeared,
+  `build.rs`) because the crate defaults `custom-protocol` on and so embeds assets
+  rather than serving them from `devUrl`; the job runs `npm ci && npm run build` first.
+
+  Verified locally end to end before being written as a workflow — Tauri v2 system
+  packages (webkit2gtk **4.1**, plus ayatana-appindicator3 for the `tray-icon` feature),
+  frontend build, sidecar build and staging, then `cargo build --all-targets` clean under
+  the workflow's `RUSTFLAGS: -Dwarnings` and `cargo test` with 7 passed. Bundling
+  (`tauri build`) stays out of scope: `@tauri-apps/cli` is not a devDependency, so it is
+  not runnable as configured.
+
 - **`cargo deny` now covers the `fuzz` tree, not just the root workspace.** `fuzz` is
   excluded from the root workspace, so a root-only scan never saw its dependencies
   while the monitor's coverage block still reported a flat `cargo deny: clean` — the
