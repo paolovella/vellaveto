@@ -60,18 +60,23 @@ fi
 #   cargo-deny  -> $CARGO_HOME/advisory-dbs/<hashed>    (one clone per source)
 # Both are reconstructible by a fetch and hold nothing of the user's, so drop
 # whichever is not a clone and let the tool re-fetch it.
-# The first version of this gated on `! -d "${dir}/.git"`, which was too weak and
-# let the real breakage through: cache pruning leaves the `.git` directory in
-# place while breaking the repository inside it, so the directory still looks
-# like a clone, gix still cannot open it, and cargo-audit falls back to a fresh
-# clone that then refuses the non-empty directory. The scheduled run on
-# 2026-10-09 proved it -- the heal never printed and the job stayed red on the
-# same error. Ask git whether the repository actually opens.
+# Treat this check as a fast path, not as the guarantee -- two successive
+# versions of it were too weak to fire on the state CI actually produces:
+#   * `! -d "${dir}/.git"` (run 2026-10-09): cache pruning leaves the `.git`
+#     directory in place, so the directory still looks like a clone.
+#   * `rev-parse --git-dir` (run 2026-10-10): succeeded on a database gix then
+#     refused -- it only identifies a recognizable `.git` structure and says
+#     nothing about whether HEAD resolves.
+# Both runs failed on the same error with the heal silent, and what recovered
+# 2026-10-10 was the retry below, keyed to the observed failure. `--verify HEAD`
+# is strictly stronger than `--git-dir` (it also rejects a repository with no
+# resolvable HEAD) so it closes the known gap, but if some future broken state
+# satisfies it too, the retry is still what catches it.
 heal_advisory_clone() {
   local dir="$1"
   [[ -d "${dir}" ]] || return 0
   if command -v git >/dev/null 2>&1; then
-    if git -C "${dir}" rev-parse --git-dir >/dev/null 2>&1; then
+    if git -C "${dir}" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
       return 0
     fi
   elif [[ -d "${dir}/.git" ]]; then
