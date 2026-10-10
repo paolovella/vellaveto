@@ -100,7 +100,21 @@ allow = [
   "CDLA-Permissive-2.0",
   # Unicode licenses (required by unicode-ident, icu4x, and related crates)
   "Unicode-3.0",
+  # Required by libfuzzer-sys, whose expression is `(MIT OR Apache-2.0) AND
+  # NCSA` -- the AND makes NCSA non-optional, so the MIT alternative does not
+  # satisfy it on its own. Reached only through the `fuzz` tree (libfuzzer-sys
+  # is absent from the root lockfile), and only by dev-only fuzz targets that
+  # are never published or shipped.
+  "NCSA",
 ]
 # Crates whose license could not be auto-detected. Each entry requires a
 # manual review confirming the license is acceptable.
 exceptions = []
+
+# Crates local to this repository that are never published carry no `license`
+# field -- `vellaveto-fuzz` is one, which is why scanning the `fuzz` tree
+# reported `unlicensed` for it. Skip unpublished crates rather than inventing a
+# license for them; `publish = false` in their own manifest is the gate, so this
+# cannot silently excuse a third-party dependency.
+[licenses.private]
+ignore = true

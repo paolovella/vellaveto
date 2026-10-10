@@ -41,5 +41,24 @@ jobs:
       - name: Install cargo-deny
         run: cargo install cargo-deny --version 0.19.8 --locked
 
+      # Check every tree with its own lockfile, not just the root one. `fuzz` is
+      # excluded from the root workspace (root Cargo.toml), so a root-only run
+      # never saw its dependencies -- that is how libfuzzer-sys's mandatory NCSA
+      # term went unreviewed. Same reasoning, and the same `cd` rather than
+      # `--manifest-path`, as the cargo-audit loop in security-audit.yml: each
+      # tree resolves config and lockfile from its own directory. Both trees
+      # share the root deny.toml, since neither `fuzz` nor the root has a
+      # per-tree config.
+      #
+      # Accumulate rc instead of failing on the first tree, so one run reports
+      # every tree rather than hiding later ones behind the first failure.
       - name: Run cargo-deny checks
-        run: cargo deny --locked check -A duplicate advisories bans sources licenses
+        run: |
+          set -u
+          rc=0
+          for d in . fuzz; do
+            echo "::group::cargo-deny: ${d}"
+            (cd "$d" && cargo deny --locked check -A duplicate advisories bans sources licenses) || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
