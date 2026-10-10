@@ -191,28 +191,60 @@ deny_scan_ran=1
 # advisories in the database", a local reproduction saw a FETCH_HEAD parse
 # error), whereas a run that reached a conclusion always prints
 # "advisories ok" or "advisories FAILED".
+#
+# Scan every tree that has its own lockfile, not just the root. `fuzz` is
+# excluded from the root workspace (root Cargo.toml), so a root-only run never
+# saw its dependencies and the coverage line below overstated its reach -- the
+# same narrower-than-it-sounds reporting this script was twice fixed for. Each
+# tree is entered with `cd` rather than `--manifest-path` so it resolves its own
+# lockfile, matching the cargo-audit loop in security-audit.yml; both trees share
+# the root deny.toml, neither having a config of its own.
+DENY_TREES=(. fuzz)
+
 run_cargo_deny() {
-  CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" \
-    -A duplicate advisories bans sources licenses 2>&1 | tee "${DENY_JSON}"
+  local rc=0 tree
+  : > "${DENY_JSON}"
+  for tree in "${DENY_TREES[@]}"; do
+    echo "--- cargo deny: ${tree} ---" | tee -a "${DENY_JSON}"
+    if ! (
+      cd "${WORKSPACE_ROOT}/${tree}" &&
+        CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" \
+          -A duplicate advisories bans sources licenses 2>&1
+    ) | tee -a "${DENY_JSON}"; then
+      rc=1
+    fi
+  done
+  return "${rc}"
+}
+
+# A run that reached a conclusion prints one advisories verdict per tree, so
+# require one from every tree: a stale database that stopped a later tree must
+# not be masked by an earlier tree's verdict. The shared CARGO_HOME means in
+# practice the database fails for all trees or none, but counting keeps the
+# UNKNOWN classification honest either way.
+deny_reached_verdict() {
+  local verdicts
+  verdicts="$(grep -cE 'advisories (ok|FAILED)' "${DENY_JSON}" 2>/dev/null || true)"
+  [[ "${verdicts:-0}" -eq "${#DENY_TREES[@]}" ]]
 }
 
 if run_cargo_deny; then
-  echo "cargo deny: clean"
+  echo "cargo deny: clean (${DENY_TREES[*]})"
 else
   deny_status=$?
-  if ! grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}" \
+  if ! deny_reached_verdict \
     && grep -qE "${DENY_STALE_DB_SIGNATURE}" "${DENY_JSON}" 2>/dev/null; then
     echo "cargo deny: advisory database looks stale; removing it and retrying once."
     rm -rf "${CARGO_HOME_DIR}/advisory-dbs"
     deny_status=0
     if run_cargo_deny; then
-      echo "cargo deny: clean (after re-fetching the advisory database)"
+      echo "cargo deny: clean (after re-fetching the advisory database, ${DENY_TREES[*]})"
     else
       deny_status=$?
     fi
   fi
   if [[ ${deny_status} -ne 0 ]]; then
-    if grep -qE 'advisories (ok|FAILED)' "${DENY_JSON}"; then
+    if deny_reached_verdict; then
       echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
     else
       deny_scan_ran=0
@@ -318,7 +350,7 @@ else
   echo "  cargo audit: DID NOT RUN - advisory posture for this run is UNKNOWN"
 fi
 if [[ ${deny_scan_ran} -eq 1 ]]; then
-  echo "  cargo deny:  completed"
+  echo "  cargo deny:  completed (${DENY_TREES[*]})"
 else
   echo "  cargo deny:  advisory check DID NOT RUN - advisory posture for this run is UNKNOWN"
 fi

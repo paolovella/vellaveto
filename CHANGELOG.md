@@ -126,6 +126,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON-RPC requests no longer fail closed. A placeholder the session never
   emitted is still refused.
 
+- **`cargo deny` now covers the `fuzz` tree, not just the root workspace.** `fuzz` is
+  excluded from the root workspace, so a root-only scan never saw its dependencies
+  while the monitor's coverage block still reported a flat `cargo deny: clean` — the
+  same narrower-than-it-sounds reporting the advisory-database work was twice fixed
+  for. Scanning it surfaced exactly two gaps, both now closed in `deny.toml`:
+  `libfuzzer-sys` is licensed `(MIT OR Apache-2.0) AND NCSA`, where the `AND` makes
+  `NCSA` mandatory rather than an alternative MIT could satisfy, so `NCSA` is now
+  allowed (reached only through `fuzz`; it is absent from the root lockfile); and
+  `vellaveto-fuzz` itself carries no `license` field, so `[licenses.private] ignore =
+  true` skips unpublished crates rather than inventing a license for them, gated on
+  `publish = false` so it cannot excuse a third-party dependency.
+
+  Both the PR gate (`cargo-deny.yml`) and `scripts/run-dependency-monitor.sh` now loop
+  the trees, entering each with `cd` rather than `--manifest-path` so it resolves its
+  own lockfile — matching the existing cargo-audit loop in `security-audit.yml` — and
+  accumulating a non-zero exit so one run reports every tree. The monitor's messages
+  and coverage line now name the trees scanned (`cargo deny: clean (. fuzz)`), so the
+  report cannot overstate its reach again.
+
+  The stale-advisory-database retry is deliberately untouched, but the verdict test it
+  depends on now requires one verdict **per tree**: a database failure that stopped a
+  later tree must not be masked by an earlier tree's verdict. Verified that 1-of-2
+  verdicts still counts as UNKNOWN, that the retry fires once and then stays red, and
+  that all four states from the advisory-database work still hold. Coverage was also
+  shown to have teeth, not just to pass: removing the `NCSA` allowance makes the
+  monitor exit non-zero and classify it as a reported finding rather than a non-run.
+
+  Unpublished crates in `formal/kani` and `formal/verus` remain unscanned because their
+  lockfiles are gitignored, so `--locked` cannot work there.
+
 ### Fixed
 
 - **Consumer Shield: the encrypted local audit now records.** `LocalAuditManager`
