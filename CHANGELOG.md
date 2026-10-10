@@ -411,6 +411,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unrecoverable failure still exits non-zero reporting UNKNOWN posture, with no
   retry loop.
 
+  **Outcome: the retry works, and the predicate was too weak a second time.** The
+  2026-10-10 scheduled run (`38040898055`, head `6bd3b54f`) is green with both
+  scanners completing, so the job now self-heals and reports honestly. But the
+  heal line is again absent from the log: `rev-parse --git-dir` *succeeded* on a
+  database gix then refused, so the pre-flight check returned early and what
+  recovered the run was the retry, on both tool paths. Two guessed preconditions
+  failed in production; recovery keyed to the observed failure worked first time.
+
+  The predicate is therefore now treated as a fast path rather than the
+  guarantee, and strengthened to `rev-parse --verify --quiet HEAD`, which is
+  strictly stronger than `--git-dir` (it additionally rejects a repository whose
+  HEAD does not resolve — the state cache pruning leaves behind) while still
+  keeping a healthy clone. In the state that previously needed the retry, the
+  heal now fires pre-flight instead, so a green log no longer carries
+  `error: couldn't fetch advisory database` lines that suggest a failure. If some
+  future broken state satisfies the stronger check too, the retry remains the
+  layer that catches it; this is a log-clarity and code-honesty change, not a
+  functional fix.
+
 ## [7.0.0] - 2026-08-04
 
 First release since 6.1.1 (2026-03-27). 273 commits.
