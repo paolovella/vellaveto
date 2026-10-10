@@ -418,6 +418,99 @@ jobs:
         run: cargo +nightly-2026-06-01 check --all-targets --locked
 
   # ───────────────────────────────────────────────────────
+  # 6b. Desktop shell (Tauri) build + test
+  #
+  # Nothing in CI compiled this crate before: surface-ci.yml builds only the
+  # npm web shell, and `packages/vellaveto-desktop/src-tauri` is excluded from
+  # the root workspace (root Cargo.toml), so `cargo test --workspace` can never
+  # reach it. The Rust desktop shell could therefore break with nothing
+  # noticing. Same shape as the `fuzz` job above -- an excluded crate with its
+  # own committed lockfile, entered with working-directory and cached under its
+  # own scope.
+  # ───────────────────────────────────────────────────────
+  desktop:
+    name: Desktop Shell Build + Test
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+
+      # Tauri v2 Linux prerequisites. webkit2gtk 4.1, not 4.0 -- 4.0 is v1, and
+      # this crate depends on `tauri = "2"`. libayatana-appindicator3 is needed
+      # because the crate enables tauri's `tray-icon` feature.
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev file
+
+      # The frontend must be built before cargo runs. `tauri.conf.json` sets
+      # frontendDist to "../dist", which is gitignored and so absent on a fresh
+      # checkout. It is NOT build.rs that needs it -- tauri_build only emits
+      # rerun-if-changed for it, guarded by an existence check. It is
+      # `tauri::generate_context!()` in src/lib.rs, which panics at compile time
+      # ("the `frontendDist` configuration is set to ... but this path doesn't
+      # exist") because this crate defaults `custom-protocol` on, so assets are
+      # embedded rather than served from devUrl.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/vellaveto-desktop/package-lock.json
+      - name: Build frontend (produces the dist/ that generate_context! embeds)
+        working-directory: packages/vellaveto-desktop
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master
+        with:
+          toolchain: stable
+      # Two scopes: the root workspace builds the sidecar below, the desktop
+      # crate is its own workspace with its own lockfile.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: |
+            . -> target
+            packages/vellaveto-desktop/src-tauri -> target
+          cache-on-failure: true
+
+      # The sidecar has to exist before the desktop crate's build script runs.
+      # tauri.conf.json declares `bundle.externalBin: ["binaries/vellaveto-proxy"]`,
+      # and tauri_build::build() resolves it against the host target triple at
+      # BUILD time, not at bundle time -- a bare `cargo build` fails with
+      # "resource path `binaries/vellaveto-proxy-<triple>` doesn't exist".
+      # So although the desktop crate has no vellaveto-* Cargo dependency, it
+      # does depend on the root workspace here, and the suffixed filename is
+      # required: Tauri looks up the sidecar per target triple.
+      - name: Build sidecar (vellaveto-proxy)
+        run: cargo build --locked -p vellaveto-proxy
+      - name: Stage sidecar for the host target triple
+        run: |
+          set -eu
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          dest=packages/vellaveto-desktop/src-tauri/binaries
+          mkdir -p "$dest"
+          cp target/debug/vellaveto-proxy "${dest}/vellaveto-proxy-${triple}"
+          echo "staged ${dest}/vellaveto-proxy-${triple}"
+
+      # --locked against the crate's own committed Cargo.lock, for the same
+      # reason the fuzz job does it: an excluded crate does not share the root
+      # lockfile, so without --locked it re-resolves every dependency on every
+      # run and a freshly published broken dependency can fail the job with no
+      # change to this repository.
+      - name: Build
+        working-directory: packages/vellaveto-desktop/src-tauri
+        run: cargo build --locked --all-targets
+      - name: Test
+        working-directory: packages/vellaveto-desktop/src-tauri
+        run: cargo test --locked
+
+  # ───────────────────────────────────────────────────────
   # 7. Benchmark regression gate (push to main only)
   # ───────────────────────────────────────────────────────
   bench:
