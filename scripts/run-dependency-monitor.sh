@@ -13,7 +13,22 @@ DENY_JSON="${OUTPUT_DIR}/cargo-deny-${TIMESTAMP}.txt"
 VET_TXT="${OUTPUT_DIR}/cargo-vet-${TIMESTAMP}.txt"
 DUPLICATES_TXT="${OUTPUT_DIR}/cargo-duplicates-${TIMESTAMP}.txt"
 METADATA_JSON="${OUTPUT_DIR}/cargo-metadata-${TIMESTAMP}.json"
-CARGO_HOME_DIR="${OUTPUT_DIR}/cargo-home"
+# Deliberately NOT under OUTPUT_DIR. CI passes `target/security`, and
+# Swatinem/rust-cache both caches and prunes `target/` -- which is what mangled
+# the advisory database on 3 of 3 observed runs (2026-10-09, -10, -11), each of
+# which then deleted and re-fetched it anyway. So the cache was storing a
+# database that was always discarded, and the breakage it caused had to be
+# worked around downstream. Keeping CARGO_HOME out of the pruned tree removes
+# the stale state at its source instead.
+#
+# Two further consequences of the old location, both fixed by moving it:
+#   * the uploaded artifact was 248 MB / 42,199 files, because this directory --
+#     including the registry copied in below -- sat inside the uploaded
+#     `target/security`. It now holds only the scan logs.
+#   * `cargo metadata` failures pointed the reader at a path CI had pruned.
+#
+# Overridable so tests can isolate it per case.
+CARGO_HOME_DIR="${DEPENDENCY_MONITOR_CARGO_HOME:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/vellaveto-dependency-monitor-cargo-home}"
 VET_CACHE_DIR="${OUTPUT_DIR}/cargo-vet-cache"
 AUDIT_FETCH_ARGS=()
 DENY_FETCH_ARGS=()
@@ -46,60 +61,27 @@ if [[ -d "${HOME}/.cargo" ]]; then
   done
 fi
 
-# CARGO_HOME_DIR lives under `target/`, which CI caches and prunes
-# (Swatinem/rust-cache lists it in Cache Paths). An advisory database can
-# therefore come back non-empty while no longer being a valid git clone, and
-# neither tool recovers on its own: cargo-audit refuses to clone over it
-# ("Refusing to initialize the non-empty directory") and cargo-deny fails to
-# read FETCH_HEAD. Nothing healed that, so the daily job stayed red until the
-# cache happened to rotate -- the alternating pass/fail in its run history.
+# There is deliberately NO pre-flight validation of the advisory database here.
+# Three predicates were tried and all three failed to fire on the state CI
+# actually produced, each confirmed by its own scheduled run:
+#   * `! -d "${dir}/.git"`              (2026-10-09) -- cache pruning leaves the
+#     `.git` directory in place, so the directory still looks like a clone.
+#   * `rev-parse --git-dir`             (2026-10-10) -- succeeds on a database
+#     gix then refuses; it only identifies a `.git` structure.
+#   * `rev-parse --verify --quiet HEAD` (2026-10-11) -- also succeeds on it.
+# Each run logged the same fetch error with the heal silent, and each was
+# recovered by the retry below, which keys off the error the tools actually
+# emit rather than off a guess about the broken state. Recovery keyed to an
+# observed failure beat three guessed preconditions, so the predicate was
+# removed rather than guessed at a fourth time.
 #
-# The two tools use different paths, and an earlier version of this fix that
-# handled only the first would have left half the breakage in place:
-#   cargo-audit -> $CARGO_HOME/advisory-db              (one clone)
-#   cargo-deny  -> $CARGO_HOME/advisory-dbs/<hashed>    (one clone per source)
-# Both are reconstructible by a fetch and hold nothing of the user's, so drop
-# whichever is not a clone and let the tool re-fetch it.
-# Treat this check as a fast path, not as the guarantee -- two successive
-# versions of it were too weak to fire on the state CI actually produces:
-#   * `! -d "${dir}/.git"` (run 2026-10-09): cache pruning leaves the `.git`
-#     directory in place, so the directory still looks like a clone.
-#   * `rev-parse --git-dir` (run 2026-10-10): succeeded on a database gix then
-#     refused -- it only identifies a recognizable `.git` structure and says
-#     nothing about whether HEAD resolves.
-# Both runs failed on the same error with the heal silent, and what recovered
-# 2026-10-10 was the retry below, keyed to the observed failure. `--verify HEAD`
-# is strictly stronger than `--git-dir` (it also rejects a repository with no
-# resolvable HEAD) so it closes the known gap, but if some future broken state
-# satisfies it too, the retry is still what catches it.
-heal_advisory_clone() {
-  local dir="$1"
-  [[ -d "${dir}" ]] || return 0
-  if command -v git >/dev/null 2>&1; then
-    if git -C "${dir}" rev-parse --verify --quiet HEAD >/dev/null 2>&1; then
-      return 0
-    fi
-  elif [[ -d "${dir}/.git" ]]; then
-    # No git to ask. Fall back to the weaker check rather than deleting a
-    # database that is probably fine.
-    return 0
-  fi
-  echo "Advisory DB at ${dir} is not a usable git clone; removing so it can be re-fetched."
-  rm -rf "${dir}"
-}
-
-heal_all_advisory_clones() {
-  heal_advisory_clone "${CARGO_HOME_DIR}/advisory-db"
-  if [[ -d "${CARGO_HOME_DIR}/advisory-dbs" ]]; then
-    for advisory_clone in "${CARGO_HOME_DIR}/advisory-dbs"/*; do
-      if [[ -d "${advisory_clone}" ]]; then
-        heal_advisory_clone "${advisory_clone}"
-      fi
-    done
-  fi
-}
-
-heal_all_advisory_clones
+# With CARGO_HOME_DIR now outside the pruned `target/` tree the stale state
+# should not arise at all; the retry remains the backstop if it ever does.
+#
+# For reference, the two tools keep separate clones, and both are reconstructible
+# by a fetch and hold nothing of the user's:
+#   cargo-audit -> $CARGO_HOME/advisory-db           (one clone)
+#   cargo-deny  -> $CARGO_HOME/advisory-dbs/<hashed> (one clone per source)
 
 if [[ "${DEPENDENCY_MONITOR_NO_FETCH:-}" == "1" ]]; then
   AUDIT_FETCH_ARGS=(--no-fetch --stale)
