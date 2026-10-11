@@ -126,6 +126,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON-RPC requests no longer fail closed. A placeholder the session never
   emitted is still refused.
 
+- **The advisory database no longer lives in the pruned `target/` tree, and the heal
+  predicate is gone.** Three scheduled runs settled this. `CARGO_HOME_DIR` was
+  `target/security/cargo-home`, and `Swatinem/rust-cache` both caches *and prunes*
+  `target/` — so the cache stored an advisory database that was then mangled, and every
+  run deleted and re-fetched it anyway. The cache was providing negative value for that
+  path while the breakage it caused was worked around downstream. `CARGO_HOME_DIR` now
+  defaults outside `target/` (`$RUNNER_TEMP`, else `$TMPDIR`, else `/tmp`), overridable
+  via `DEPENDENCY_MONITOR_CARGO_HOME` so tests can isolate it. The `$HOME/.cargo`
+  seeding is unchanged and still saves crate downloads, since `registry` is cached by
+  rust-cache while `advisory-db` is not.
+
+  Moving it also shrinks the uploaded artifact from **248 MB / 42,199 files** to **10
+  files**: the directory, including the registry copied into it, had been sitting inside
+  the uploaded `target/security`. The artifact now holds only the scan logs.
+
+  With that, the pre-flight heal is deleted rather than fixed again. Three predicates
+  were tried and each missed on the state CI actually produced, every one confirmed by
+  its own scheduled run — `! -d .git` (10-09, job red), `rev-parse --git-dir` (10-10),
+  and `rev-parse --verify --quiet HEAD` (10-11). All three runs logged the same fetch
+  error with the heal silent, and all three were recovered by the retry, which keys off
+  the error the tools actually emit instead of a guess about the broken state. Recovery
+  keyed to an observed failure beat three guessed preconditions, so the predicate was
+  removed as unproven rather than guessed at a fourth time; the comment in its place
+  records the attempts so it is not reintroduced.
+
+  **The retry is deliberately untouched** and remains the backstop if the new location
+  ever goes stale. Verified: a normal run now logs no fetch errors and no retries at all
+  (both scanners clean, both trees, exit 0); a stale database at the new location still
+  triggers the retry once and then stays red with `SCAN DID NOT RUN` and UNKNOWN posture;
+  an unrecoverable run exits non-zero with zero retries; and the uploaded directory no
+  longer contains `cargo-home`.
+
 - **CI now builds and tests the Tauri desktop shell.** `surface-ci.yml` built only the
   npm web shell, and `packages/vellaveto-desktop/src-tauri` is excluded from the root
   workspace, so `cargo test --workspace` could never reach it — the Rust desktop shell
