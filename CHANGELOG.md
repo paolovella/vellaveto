@@ -126,6 +126,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   JSON-RPC requests no longer fail closed. A placeholder the session never
   emitted is still refused.
 
+- **`cargo deny` now also covers the desktop shell**, closing the last tree that had a
+  lockfile but no license/advisory gate. `packages/vellaveto-desktop/src-tauri` is
+  excluded from the root workspace and is shipped code with 435 dependencies, so a
+  root-only scan never saw it; `security-audit.yml` already looped all three trees for
+  cargo-**audit**, so this brings deny to parity rather than inventing a pattern. It
+  needed **no policy changes** — unlike `fuzz`, the tree passes the existing `deny.toml`
+  as-is (`advisories ok, bans ok, licenses ok, sources ok`).
+
+  The per-tree verdict requirement generalized without a code change: it compares against
+  the length of the tree list, so it now demands three verdicts and a 2-of-3 result still
+  reports UNKNOWN rather than inheriting another tree's pass.
+
+  One accepted cost: sharing a single `deny.toml` across three trees means src-tauri emits
+  13 non-fatal warnings about config entries that do not apply to its smaller dependency
+  set — 8 unmatched `[bans] skip` entries (that list is tuned to the root lockfile) and 5
+  unused license allowances. They are left to warn rather than silenced, for the same
+  reason as the `NCSA` warning: `unused-allowed-license = "allow"` would blind the check
+  for every license and every tree, and per-tree configs would duplicate the whole allow
+  list with drift risk. `formal/kani` and `formal/verus` remain out of reach, their
+  lockfiles being gitignored.
+
 - **The advisory database no longer lives in the pruned `target/` tree, and the heal
   predicate is gone.** Three scheduled runs settled this. `CARGO_HOME_DIR` was
   `target/security/cargo-home`, and `Swatinem/rust-cache` both caches *and prunes*

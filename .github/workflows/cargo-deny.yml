@@ -56,7 +56,7 @@ jobs:
         run: |
           set -u
           rc=0
-          for d in . fuzz; do
+          for d in . fuzz packages/vellaveto-desktop/src-tauri; do
             echo "::group::cargo-deny: ${d}"
             (cd "$d" && cargo deny --locked check -A duplicate advisories bans sources licenses) || rc=1
             echo "::endgroup::"

@@ -174,14 +174,24 @@ deny_scan_ran=1
 # error), whereas a run that reached a conclusion always prints
 # "advisories ok" or "advisories FAILED".
 #
-# Scan every tree that has its own lockfile, not just the root. `fuzz` is
-# excluded from the root workspace (root Cargo.toml), so a root-only run never
-# saw its dependencies and the coverage line below overstated its reach -- the
-# same narrower-than-it-sounds reporting this script was twice fixed for. Each
-# tree is entered with `cd` rather than `--manifest-path` so it resolves its own
-# lockfile, matching the cargo-audit loop in security-audit.yml; both trees share
-# the root deny.toml, neither having a config of its own.
-DENY_TREES=(. fuzz)
+# Scan every tree that has its own lockfile, not just the root. `fuzz` and the
+# desktop shell are both excluded from the root workspace (root Cargo.toml), so a
+# root-only run never saw their dependencies and the coverage line below
+# overstated its reach -- the same narrower-than-it-sounds reporting this script
+# was twice fixed for. This now matches the cargo-audit loop in
+# security-audit.yml, which already covered all three.
+#
+# Each tree is entered with `cd` rather than `--manifest-path` so it resolves its
+# own lockfile; all three share the root deny.toml, none having a config of its
+# own. That sharing is why src-tauri emits ~13 non-fatal warnings about config
+# entries that do not apply to its smaller tree (unmatched `[bans] skip` entries
+# and unused license allowances). Those are left to warn rather than silenced:
+# `unused-allowed-license = "allow"` would blind the check for every license and
+# every tree, and per-tree configs would duplicate the whole allow list.
+#
+# `formal/kani` and `formal/verus` stay out: their lockfiles are gitignored, so
+# `--locked` cannot work there.
+DENY_TREES=(. fuzz packages/vellaveto-desktop/src-tauri)
 
 run_cargo_deny() {
   local rc=0 tree
