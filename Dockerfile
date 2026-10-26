@@ -11,7 +11,7 @@
 #   docker run -p 3000:3000 -e VELLAVETO_API_KEY=your-secret-key -v ./policy.toml:/etc/vellaveto/config.toml:ro ghcr.io/paolovella/vellaveto:latest
 
 # Build stage: Compile Rust binaries with musl for static linking
-FROM rust:1.98-alpine@sha256:7cc1c22d77d9432f7fe012a70e6d3e555af54c2a6832700ed7d553f1769ae89f AS builder
+FROM rust:1.99-alpine@sha256:b1d5dd5a22a09404d3e798c0cf051b689077360374eb505fa5bb93c479693d87 AS builder
 
 # Resolve target triple from Docker's TARGETARCH (amd64 or arm64)
 ARG TARGETARCH
@@ -136,7 +136,7 @@ RUN test -x /build/out/vellaveto \
     && test -x /build/out/vellaveto-proxy
 
 # Runtime stage: Minimal Alpine image
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 
 LABEL org.opencontainers.image.title="Vellaveto" \
       org.opencontainers.image.description="Runtime security engine for AI agent tool calls" \
