@@ -92,7 +92,7 @@ roxmltree = "0.21"
 # lru >= 0.18.2 fixes RUSTSEC-2026-0253 (LruCache::pop is not panic-safe, leaving
 # dangling pointers in the LRU list if a key's Drop panics — CWE-416/415).
 # Reachable only with catch_unwind and a panicking key Drop; our keys are String.
-lru = "0.18.2"
+lru = "0.19.0"
 # Phase 43: Centralized Audit Store (PostgreSQL backend)
 sqlx = { workspace = true, optional = true }
 
