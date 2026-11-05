@@ -259,6 +259,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every run logged `Unexpected input(s) 'profile'`; the input was silently
   ignored, so this changes no behaviour and only clears the warning.
 
+### Fixed
+
+- **The dependency monitor was reporting 17 real vulnerabilities as an infrastructure
+  unknown.** From 2026-10-13 until today, every scheduled run printed:
+
+  ```
+  cargo deny: ADVISORY SCAN DID NOT RUN (exit 1). The advisory database could not be loaded...
+    cargo deny:  advisory check DID NOT RUN - advisory posture for this run is UNKNOWN
+  ```
+
+  That was false twice over. cargo-deny had run fine and reached a verdict on every
+  tree — `advisories FAILED` for the root and `fuzz` lockfiles, `advisories ok` for the
+  desktop one — and the stated cause ("the advisory database could not be loaded") was
+  something the code had never established.
+
+  **Cause.** cargo-deny colours its verdict line when `CARGO_TERM_COLOR=always` is set
+  in the job environment, as CI sets it, so the bytes reaching the classifier were
+  `advisories \033[31mFAILED\033[0m, ...` while `deny_reached_verdict` grepped for
+  `advisories (ok|FAILED)`. Measured, not inferred: fed the exact CI bytes, the old
+  predicate matched **0 of 3** verdict lines; the new code matches 3 of 3. Verified both
+  directions locally — with `CARGO_TERM_COLOR=always` cargo-deny colours even through a
+  pipe, without it it does not, which is why this never reproduced outside CI.
+
+  **Why it stayed hidden for three weeks.** The predicate is only consulted on the
+  failure path. While no advisory existed every tree exited 0, the script took its
+  `cargo deny: clean` branch, and the predicate was never called at all. The first real
+  advisory (`tokio`, 2026-10-13) made the path reachable, and it has been wrong at every
+  run since. It is not fallout from the cargo-deny coverage work that merged the day
+  before: the bug predates it and only the new advisories exposed it.
+
+  **Why the earlier verification missed it.** That work tested this predicate at 0, 1, 2
+  and 3 verdicts — with hand-written **plain-text** fixtures. A classifier that parses
+  another tool's output has to be tested against that tool's real bytes, colour and all.
+
+  The fix, in `scripts/run-dependency-monitor.sh`:
+
+  - `--color never` on the cargo-deny invocation, which overrides the environment
+    variable (verified), plus a `strip_ansi` pass on the captured output as the
+    guarantee — it keeps the classification correct whatever triggers colour in future,
+    and makes the uploaded artifact plain text for whoever reads it.
+  - The message no longer asserts a cause it cannot know. It now reports the
+    observation — how many of how many trees reached a verdict — and points at the log
+    for the reason. Naming a guessed cause is what turned a live finding into a shrug.
+  - `scripts/tests/dependency-monitor-verdict.sh`, wired into the existing lint job in
+    `ci.yml`: 13 checks covering coloured, plain and mixed input, including the exact
+    case that broke (every tree reporting `FAILED` **in colour** must classify as a
+    finding, not UNKNOWN). It extracts the functions from the script rather than copying
+    them, so drift fails the test instead of passing a self-agreeing duplicate, and it
+    reads the tree count from `DENY_TREES` so a fourth lockfile cannot silently
+    invalidate the expectations.
+
+  End-to-end on a deliberately vulnerable lockfile with colour forced on, the monitor
+  now prints `cargo deny reported issues (exit 1)` and `cargo deny: completed` where it
+  used to print `SCAN DID NOT RUN` and `posture UNKNOWN`.
+
 ### Security
 
 - **Cleared every outstanding RustSec advisory across all three lockfiles.** The

@@ -114,6 +114,7 @@ jobs:
             scripts/generate-evidence-manifest.sh \
             scripts/report-formal-tooling.sh \
             scripts/run-dependency-monitor.sh \
+            scripts/tests/dependency-monitor-verdict.sh \
             scripts/clippy.sh
 
       - name: Format
@@ -132,6 +133,14 @@ jobs:
 
       - name: Check duplicate crate baseline
         run: bash scripts/check-cargo-duplicates.sh
+
+      # Guards the classifier that decides whether an advisory scan reached a
+      # conclusion. It silently inverted that call for weeks because the only
+      # tests it had used plain-text fixtures, while cargo-deny colours its
+      # verdict in CI. Cheap, no toolchain needed, and it fails on the exact
+      # bytes that broke it.
+      - name: Check dependency monitor verdict classification
+        run: bash scripts/tests/dependency-monitor-verdict.sh
 
       - name: Guard zk-audit feature stays opt-in
         run: |
