@@ -193,16 +193,35 @@ deny_scan_ran=1
 # `--locked` cannot work there.
 DENY_TREES=(. fuzz packages/vellaveto-desktop/src-tauri)
 
+# Remove ANSI escape sequences. cargo-deny colours its verdict line whenever
+# CARGO_TERM_COLOR=always is set in the job environment, which it is in CI, so
+# the bytes reaching the classifier below were
+#   "advisories \033[31mFAILED\033[0m, bans \033[32mok\033[0m, ..."
+# and a grep for "advisories FAILED" matched none of it. Verified both ways
+# locally: with the variable set, cargo-deny colours even through a pipe; with
+# it unset it does not, which is why this never reproduced outside CI.
+#
+# `--color never` below overrides the variable (also verified), so this pass is
+# the belt to that braces: it keeps the classification correct even if a future
+# cargo-deny colours by some other trigger, and it makes the uploaded artifact
+# plain text for whoever reads it.
+strip_ansi() {
+  sed -E $'s/\x1b\\[[0-9;]*[A-Za-z]//g'
+}
+
 run_cargo_deny() {
   local rc=0 tree
   : > "${DENY_JSON}"
   for tree in "${DENY_TREES[@]}"; do
     echo "--- cargo deny: ${tree} ---" | tee -a "${DENY_JSON}"
+    # `set -o pipefail` (top of file) is what makes this `if !` see cargo-deny's
+    # status rather than the last stage's; without it the rc=1 below would never
+    # fire, whatever cargo-deny did.
     if ! (
       cd "${WORKSPACE_ROOT}/${tree}" &&
-        CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked check "${DENY_FETCH_ARGS[@]}" \
+        CARGO_HOME="${CARGO_HOME_DIR}" cargo deny --locked --color never check "${DENY_FETCH_ARGS[@]}" \
           -A duplicate advisories bans sources licenses 2>&1
-    ) | tee -a "${DENY_JSON}"; then
+    ) | strip_ansi | tee -a "${DENY_JSON}"; then
       rc=1
     fi
   done
@@ -214,10 +233,14 @@ run_cargo_deny() {
 # not be masked by an earlier tree's verdict. The shared CARGO_HOME means in
 # practice the database fails for all trees or none, but counting keeps the
 # UNKNOWN classification honest either way.
+deny_verdict_count() {
+  local n
+  n="$(grep -cE 'advisories (ok|FAILED)' "${DENY_JSON}" 2>/dev/null || true)"
+  echo "${n:-0}"
+}
+
 deny_reached_verdict() {
-  local verdicts
-  verdicts="$(grep -cE 'advisories (ok|FAILED)' "${DENY_JSON}" 2>/dev/null || true)"
-  [[ "${verdicts:-0}" -eq "${#DENY_TREES[@]}" ]]
+  [[ "$(deny_verdict_count)" -eq "${#DENY_TREES[@]}" ]]
 }
 
 if run_cargo_deny; then
@@ -240,7 +263,14 @@ else
       echo "cargo deny reported issues (exit ${deny_status}). See ${DENY_JSON}."
     else
       deny_scan_ran=0
-      echo "cargo deny: ADVISORY SCAN DID NOT RUN (exit ${deny_status}). The advisory database could not be loaded, so no advisory was assessed. See ${DENY_JSON}."
+      # State what was observed, not a guessed cause. The previous wording
+      # asserted "the advisory database could not be loaded", which it had not
+      # established -- and when this branch was first reached for real, on
+      # 2026-10-13, that assertion was false: cargo-deny had run fine and
+      # reported `advisories FAILED` on 17 genuine vulnerabilities. Naming a
+      # cause the code cannot know turned a live finding into an infrastructure
+      # shrug, which is the opposite of what this classification is for.
+      echo "cargo deny: ADVISORY SCAN INCOMPLETE (exit ${deny_status}). Found $(deny_verdict_count) of ${#DENY_TREES[@]} per-tree advisory verdicts, so at least one tree reached no conclusion and its advisory posture is UNKNOWN. This says nothing about why; read ${DENY_JSON} for the reason."
     fi
   fi
 fi
@@ -344,7 +374,7 @@ fi
 if [[ ${deny_scan_ran} -eq 1 ]]; then
   echo "  cargo deny:  completed (${DENY_TREES[*]})"
 else
-  echo "  cargo deny:  advisory check DID NOT RUN - advisory posture for this run is UNKNOWN"
+  echo "  cargo deny:  INCOMPLETE - $(deny_verdict_count)/${#DENY_TREES[@]} trees reached a verdict; advisory posture for the rest is UNKNOWN"
 fi
 
 # A scan that could not run is not a pass, so the job still fails either way.
