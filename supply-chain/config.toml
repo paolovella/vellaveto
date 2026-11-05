@@ -506,7 +506,7 @@ version = "0.2.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-bigint]]
-version = "0.7.5"
+version = "0.7.10"
 criteria = "safe-to-deploy"
 
 [[exemptions.crypto-common]]
@@ -518,7 +518,7 @@ version = "0.2.2"
 criteria = "safe-to-deploy"
 
 [[exemptions.ctutils]]
-version = "0.4.2"
+version = "0.4.8"
 criteria = "safe-to-deploy"
 
 [[exemptions.curve25519-dalek]]
@@ -1158,7 +1158,7 @@ version = "0.30.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.libz-sys]]
-version = "1.1.29"
+version = "1.1.31"
 criteria = "safe-to-deploy"
 
 [[exemptions.linux-raw-sys]]
@@ -1526,7 +1526,7 @@ version = "0.14.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.pulldown-cmark]]
-version = "0.13.4"
+version = "0.13.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.pulldown-cmark-to-cmark]]
@@ -1554,7 +1554,7 @@ version = "0.11.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.quinn-proto]]
-version = "0.11.16"
+version = "0.11.19"
 criteria = "safe-to-deploy"
 
 [[exemptions.quinn-udp]]
@@ -1714,7 +1714,7 @@ version = "1.1.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls]]
-version = "0.23.45"
+version = "0.23.46"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-native-certs]]
@@ -1734,7 +1734,7 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustls-webpki]]
-version = "0.103.15"
+version = "0.103.16"
 criteria = "safe-to-deploy"
 
 [[exemptions.rustversion]]
@@ -2058,7 +2058,7 @@ version = "0.1.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio]]
-version = "1.53.1"
+version = "1.54.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.tokio-macros]]
@@ -2390,7 +2390,7 @@ version = "1.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-root-certs]]
-version = "1.0.9"
+version = "1.0.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-roots]]
@@ -2398,7 +2398,7 @@ version = "0.26.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.webpki-roots]]
-version = "1.0.9"
+version = "1.0.11"
 criteria = "safe-to-deploy"
 
 [[exemptions.weezl]]
