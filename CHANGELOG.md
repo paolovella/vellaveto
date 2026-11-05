@@ -304,7 +304,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   The root update touched **exactly the ten requested crates with zero transitive side
   effects** — no crates added or removed, so `cargo vet` needed no new entries.
-  `src-tauri` additionally moved `mio` 1.1.1 → 1.2.4 as a `tokio` dependency.
+
+  Local verification then surfaced an advisory the 2026-11-02 CI run had not seen,
+  because the RustSec database had gained it since: **RUSTSEC-2026-0441**, `pin-utils`
+  unmaintained — its upstream repository was archived on 2026-10-01. It was already
+  present in `main`'s `src-tauri` lockfile, so it is a new advisory rather than
+  something this change introduced. Its `patched` list is empty, so no version of
+  `pin-utils` clears it and bumping to 0.1.1 would not have helped. Rather than ignore
+  it, the dependency is gone: `pin-utils` was reachable only as
+  `pin-utils → hyper 1.8.1 → reqwest → tauri`, and newer `hyper` dropped it — the root
+  lockfile was already on `hyper` 1.11.1 with no `pin-utils` at all. Bumping `src-tauri`
+  to `hyper` 1.12.0 removes the crate outright. A dependency that no longer exists needs
+  no exemption, which is why the "no advisory was ignored" claim above still holds.
+  `src-tauri` therefore also moved `mio` 1.1.1 → 1.2.4 and `want` 0.3.1 → 0.3.2.
+
+  All three trees now return clean from the exact command CI runs
+  (`cargo audit -D warnings`, per tree).
 
   Worth recording for next time: the 28 open Dependabot PRs could not have resolved
   this one at a time. #529 bumps `rustls` correctly and still leaves four red security
