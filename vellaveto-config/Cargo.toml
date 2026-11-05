@@ -15,7 +15,7 @@ readme = "README.md"
 vellaveto-types = { path = "../vellaveto-types", version = "7.0.0" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 tracing = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
