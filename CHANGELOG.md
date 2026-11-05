@@ -259,7 +259,128 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every run logged `Unexpected input(s) 'profile'`; the input was silently
   ignored, so this changes no behaviour and only clears the warning.
 
+### Fixed
+
+- **The dependency monitor was reporting 17 real vulnerabilities as an infrastructure
+  unknown.** From 2026-10-13 until today, every scheduled run printed:
+
+  ```
+  cargo deny: ADVISORY SCAN DID NOT RUN (exit 1). The advisory database could not be loaded...
+    cargo deny:  advisory check DID NOT RUN - advisory posture for this run is UNKNOWN
+  ```
+
+  That was false twice over. cargo-deny had run fine and reached a verdict on every
+  tree — `advisories FAILED` for the root and `fuzz` lockfiles, `advisories ok` for the
+  desktop one — and the stated cause ("the advisory database could not be loaded") was
+  something the code had never established.
+
+  **Cause.** cargo-deny colours its verdict line when `CARGO_TERM_COLOR=always` is set
+  in the job environment, as CI sets it, so the bytes reaching the classifier were
+  `advisories \033[31mFAILED\033[0m, ...` while `deny_reached_verdict` grepped for
+  `advisories (ok|FAILED)`. Measured, not inferred: fed the exact CI bytes, the old
+  predicate matched **0 of 3** verdict lines; the new code matches 3 of 3. Verified both
+  directions locally — with `CARGO_TERM_COLOR=always` cargo-deny colours even through a
+  pipe, without it it does not, which is why this never reproduced outside CI.
+
+  **Why it stayed hidden for three weeks.** The predicate is only consulted on the
+  failure path. While no advisory existed every tree exited 0, the script took its
+  `cargo deny: clean` branch, and the predicate was never called at all. The first real
+  advisory (`tokio`, 2026-10-13) made the path reachable, and it has been wrong at every
+  run since. It is not fallout from the cargo-deny coverage work that merged the day
+  before: the bug predates it and only the new advisories exposed it.
+
+  **Why the earlier verification missed it.** That work tested this predicate at 0, 1, 2
+  and 3 verdicts — with hand-written **plain-text** fixtures. A classifier that parses
+  another tool's output has to be tested against that tool's real bytes, colour and all.
+
+  The fix, in `scripts/run-dependency-monitor.sh`:
+
+  - `--color never` on the cargo-deny invocation, which overrides the environment
+    variable (verified), plus a `strip_ansi` pass on the captured output as the
+    guarantee — it keeps the classification correct whatever triggers colour in future,
+    and makes the uploaded artifact plain text for whoever reads it.
+  - The message no longer asserts a cause it cannot know. It now reports the
+    observation — how many of how many trees reached a verdict — and points at the log
+    for the reason. Naming a guessed cause is what turned a live finding into a shrug.
+  - `scripts/tests/dependency-monitor-verdict.sh`, wired into the existing lint job in
+    `ci.yml`: 13 checks covering coloured, plain and mixed input, including the exact
+    case that broke (every tree reporting `FAILED` **in colour** must classify as a
+    finding, not UNKNOWN). It extracts the functions from the script rather than copying
+    them, so drift fails the test instead of passing a self-agreeing duplicate, and it
+    reads the tree count from `DENY_TREES` so a fourth lockfile cannot silently
+    invalidate the expectations.
+
+  End-to-end on a deliberately vulnerable lockfile with colour forced on, the monitor
+  now prints `cargo deny reported issues (exit 1)` and `cargo deny: completed` where it
+  used to print `SCAN DID NOT RUN` and `posture UNKNOWN`.
+
 ### Security
+
+- **Cleared every outstanding RustSec advisory across all three lockfiles.** The
+  security gates had been red on `main` every day since 2026-10-13, correctly: `cargo
+  audit -D warnings` reported **17 vulnerabilities + 2 denied warnings** in the root
+  lockfile, **11 + 1** in `fuzz`, and **1** in `packages/vellaveto-desktop/src-tauri`.
+  All of it is fixed by resolving newer patch releases — **lockfile-only, no manifest
+  and no source changes**, because every target was already inside the existing semver
+  requirement.
+
+  Four of these bear directly on what this project does, rather than being generic
+  transitive noise:
+
+  - **RUSTSEC-2026-0382** (`rustls-webpki` 0.103.15 → 0.103.16): certificate
+    verification could accept paths through distrusted emSign intermediates, whose
+    private keys are now publicly known. `vellaveto-tls` exists to make exactly this
+    trust decision, with mTLS and SPIFFE identity extraction on top of it.
+  - **RUSTSEC-2026-0349** (`rustls` 0.23.45 → 0.23.46): an unauthenticated
+    `ServerHello` could be recorded before the server was authenticated, so a network
+    attacker answering one connection with X25519 and hanging up causes later
+    handshakes to that name to carry only a classical key share — completing with
+    classical-only key exchange and **no error**. This repo ships a deliberate PQ KEX
+    policy (`HybridRequiredWhenSupported`); the flaw defeats it silently.
+  - **RUSTSEC-2026-0346** (same bump): `Debug` impls for client session values exposed
+    TLS secrets — the precise bug class `CLAUDE.md` mandates custom `Debug` impls to
+    prevent, arriving through a dependency instead of our own code.
+  - **RUSTSEC-2026-0387 / -0385** (`crypto-bigint` → 0.7.10, `ctutils` → 0.4.8):
+    timing variability in operations intended to be constant-time, in a tree that runs
+    Ed25519, ML-DSA, Pedersen and Groth16 paths. `crypto-bigint` 0.7.5 was also
+    **yanked**, which `deny.toml` blocks outright (`yanked = "deny"`).
+
+  Also cleared: `quinn-proto` → 0.11.19 (RUSTSEC-2026-0338/0339/0340/0341/0342, three
+  at CVSS 7.5), `pulldown-cmark` → 0.13.6 (-0414, -0433, both 7.5), `webpki-roots` and
+  `webpki-root-certs` → 1.0.11 (-0381, -0383), `libz-sys` → 1.1.31 (-0418, build script
+  leaking environment variables), and `tokio` → 1.54.1 (-0386, `AsyncFd::new` violating
+  I/O safety). The highest raw scores in that group are `quinn-proto`'s, but they are
+  purely transitive — no `quinn` appears in any `Cargo.toml` — so they are listed
+  second rather than led with.
+
+  **No advisory was ignored.** Every finding had a published fix, so nothing was added
+  to either `.cargo/audit.toml`; an ignore entry here would be the credibility problem
+  those files were pruned for.
+
+  The root update touched **exactly the ten requested crates with zero transitive side
+  effects** — no crates added or removed, so `cargo vet` needed no new entries.
+
+  Local verification then surfaced an advisory the 2026-11-02 CI run had not seen,
+  because the RustSec database had gained it since: **RUSTSEC-2026-0441**, `pin-utils`
+  unmaintained — its upstream repository was archived on 2026-10-01. It was already
+  present in `main`'s `src-tauri` lockfile, so it is a new advisory rather than
+  something this change introduced. Its `patched` list is empty, so no version of
+  `pin-utils` clears it and bumping to 0.1.1 would not have helped. Rather than ignore
+  it, the dependency is gone: `pin-utils` was reachable only as
+  `pin-utils → hyper 1.8.1 → reqwest → tauri`, and newer `hyper` dropped it — the root
+  lockfile was already on `hyper` 1.11.1 with no `pin-utils` at all. Bumping `src-tauri`
+  to `hyper` 1.12.0 removes the crate outright. A dependency that no longer exists needs
+  no exemption, which is why the "no advisory was ignored" claim above still holds.
+  `src-tauri` therefore also moved `mio` 1.1.1 → 1.2.4 and `want` 0.3.1 → 0.3.2.
+
+  All three trees now return clean from the exact command CI runs
+  (`cargo audit -D warnings`, per tree).
+
+  Worth recording for next time: the 28 open Dependabot PRs could not have resolved
+  this one at a time. #529 bumps `rustls` correctly and still leaves four red security
+  checks, because the gate only clears once *every* advisory is gone. A per-PR gate and
+  a whole-lockfile advisory check deadlock each other, and the fix is one consolidated
+  bump.
 
 - **Ed25519 signatures are now domain-separated** (DOC-CRED-2). Every signed
   artifact hashed its fields into SHA-256 and signed the bare 32-byte digest, so
