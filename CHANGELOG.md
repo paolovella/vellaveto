@@ -261,6 +261,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Cleared every outstanding RustSec advisory across all three lockfiles.** The
+  security gates had been red on `main` every day since 2026-10-13, correctly: `cargo
+  audit -D warnings` reported **17 vulnerabilities + 2 denied warnings** in the root
+  lockfile, **11 + 1** in `fuzz`, and **1** in `packages/vellaveto-desktop/src-tauri`.
+  All of it is fixed by resolving newer patch releases — **lockfile-only, no manifest
+  and no source changes**, because every target was already inside the existing semver
+  requirement.
+
+  Four of these bear directly on what this project does, rather than being generic
+  transitive noise:
+
+  - **RUSTSEC-2026-0382** (`rustls-webpki` 0.103.15 → 0.103.16): certificate
+    verification could accept paths through distrusted emSign intermediates, whose
+    private keys are now publicly known. `vellaveto-tls` exists to make exactly this
+    trust decision, with mTLS and SPIFFE identity extraction on top of it.
+  - **RUSTSEC-2026-0349** (`rustls` 0.23.45 → 0.23.46): an unauthenticated
+    `ServerHello` could be recorded before the server was authenticated, so a network
+    attacker answering one connection with X25519 and hanging up causes later
+    handshakes to that name to carry only a classical key share — completing with
+    classical-only key exchange and **no error**. This repo ships a deliberate PQ KEX
+    policy (`HybridRequiredWhenSupported`); the flaw defeats it silently.
+  - **RUSTSEC-2026-0346** (same bump): `Debug` impls for client session values exposed
+    TLS secrets — the precise bug class `CLAUDE.md` mandates custom `Debug` impls to
+    prevent, arriving through a dependency instead of our own code.
+  - **RUSTSEC-2026-0387 / -0385** (`crypto-bigint` → 0.7.10, `ctutils` → 0.4.8):
+    timing variability in operations intended to be constant-time, in a tree that runs
+    Ed25519, ML-DSA, Pedersen and Groth16 paths. `crypto-bigint` 0.7.5 was also
+    **yanked**, which `deny.toml` blocks outright (`yanked = "deny"`).
+
+  Also cleared: `quinn-proto` → 0.11.19 (RUSTSEC-2026-0338/0339/0340/0341/0342, three
+  at CVSS 7.5), `pulldown-cmark` → 0.13.6 (-0414, -0433, both 7.5), `webpki-roots` and
+  `webpki-root-certs` → 1.0.11 (-0381, -0383), `libz-sys` → 1.1.31 (-0418, build script
+  leaking environment variables), and `tokio` → 1.54.1 (-0386, `AsyncFd::new` violating
+  I/O safety). The highest raw scores in that group are `quinn-proto`'s, but they are
+  purely transitive — no `quinn` appears in any `Cargo.toml` — so they are listed
+  second rather than led with.
+
+  **No advisory was ignored.** Every finding had a published fix, so nothing was added
+  to either `.cargo/audit.toml`; an ignore entry here would be the credibility problem
+  those files were pruned for.
+
+  The root update touched **exactly the ten requested crates with zero transitive side
+  effects** — no crates added or removed, so `cargo vet` needed no new entries.
+  `src-tauri` additionally moved `mio` 1.1.1 → 1.2.4 as a `tokio` dependency.
+
+  Worth recording for next time: the 28 open Dependabot PRs could not have resolved
+  this one at a time. #529 bumps `rustls` correctly and still leaves four red security
+  checks, because the gate only clears once *every* advisory is gone. A per-PR gate and
+  a whole-lockfile advisory check deadlock each other, and the fix is one consolidated
+  bump.
+
 - **Ed25519 signatures are now domain-separated** (DOC-CRED-2). Every signed
   artifact hashed its fields into SHA-256 and signed the bare 32-byte digest, so
   nothing in the signed bytes identified which artifact type they came from —
