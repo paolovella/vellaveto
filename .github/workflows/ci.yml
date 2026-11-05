@@ -114,6 +114,7 @@ jobs:
             scripts/generate-evidence-manifest.sh \
             scripts/report-formal-tooling.sh \
             scripts/run-dependency-monitor.sh \
+            scripts/tests/dependency-monitor-verdict.sh \
             scripts/clippy.sh
 
       - name: Format
@@ -133,11 +134,44 @@ jobs:
       - name: Check duplicate crate baseline
         run: bash scripts/check-cargo-duplicates.sh
 
+      # Guards the classifier that decides whether an advisory scan reached a
+      # conclusion. It silently inverted that call for weeks because the only
+      # tests it had used plain-text fixtures, while cargo-deny colours its
+      # verdict in CI. Cheap, no toolchain needed, and it fails on the exact
+      # bytes that broke it.
+      - name: Check dependency monitor verdict classification
+        run: bash scripts/tests/dependency-monitor-verdict.sh
+
+      # This guard could not fail, two independent ways, so it has been passing
+      # vacuously since it was written:
+      #
+      #   1. `rg` is not installed on the runner and no step installs it (this
+      #      was its only use in any workflow). The runner logged
+      #      "rg: command not found", but a command that fails inside an `if`
+      #      condition does not trip `set -e` -- the branch is simply not taken,
+      #      so the step exited 0.
+      #   2. The pattern never matched regardless. `cargo tree -e features`
+      #      prints `<crate> feature "<name>"` lines for DEPENDENCIES' features,
+      #      never for the root package's own, so
+      #      `vellaveto-audit feature "zk-audit"` appears nowhere -- verified to
+      #      yield 0 occurrences even with `--features zk-audit` explicitly on.
+      #
+      # The signal that does distinguish the two states is the ark-* crates
+      # zk-audit pulls in: 51 of them with the feature enabled, 0 without, and 0
+      # in the default workspace tree including dev-dependencies. Both controls
+      # checked: this grep stays quiet on today's tree and fires on a tree built
+      # with the feature on.
+      #
+      # It matters beyond tidiness: `.cargo/audit.toml` ignores
+      # RUSTSEC-2024-0388 on the stated grounds that `derivative` arrives only
+      # "transitive via opt-in zk-audit". If zk-audit ever became default that
+      # ignore would quietly become a default-path exemption, and this is the
+      # check meant to stop it.
       - name: Guard zk-audit feature stays opt-in
         run: |
           set -euo pipefail
-          if cargo tree --workspace --locked -e features | rg -q 'vellaveto-audit feature "zk-audit"'; then
-            echo "::error::vellaveto-audit/zk-audit must not be enabled by default."
+          if cargo tree --workspace --locked --prefix none | grep -q '^ark-'; then
+            echo "::error::vellaveto-audit/zk-audit must not be enabled by default (ark-* crates present in the default workspace tree)."
             exit 1
           fi
 
