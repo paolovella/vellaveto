@@ -50,10 +50,10 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 # tracing-opentelemetry 0.34 is the first release that takes opentelemetry ^0.33;
 # bumping the otel pins without it leaves two opentelemetry majors in the lock and
 # SdkTracer stops satisfying the Tracer trait the bridge expects.
-opentelemetry = "=0.33.0"
-opentelemetry_sdk = { version = "=0.33.0", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "=0.33.0", features = ["grpc-tonic", "http-proto"] }
-opentelemetry-semantic-conventions = "=0.33.0"
+opentelemetry = "=0.33.1"
+opentelemetry_sdk = { version = "=0.33.1", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "=0.33.1", features = ["grpc-tonic", "http-proto"] }
+opentelemetry-semantic-conventions = "=0.33.1"
 tracing-opentelemetry = "0.34"
 tokio-tungstenite = "0.30"
 tonic = "0.14"
