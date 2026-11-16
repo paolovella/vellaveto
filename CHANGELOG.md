@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Cleared three advisories that landed after the November sweep, and suppressed one with
+  a checkable justification.** `security-audit` had been red on `main` since 2026-11-09 and
+  `dependency-monitor` daily since 2026-11-13, correctly: `cargo audit -D warnings` reported
+  2 vulnerabilities + 1 denied warning in the root lockfile, 1 in `fuzz`, 1 in `src-tauri`.
+
+  Two were patch-level and lockfile-only, with zero transitive side effects — `rustix`
+  1.1.4 → 1.1.6 (RUSTSEC-2026-0486, `xattr` marking unwritten bytes initialized on a
+  zero-length buffer) in the root and desktop trees, and `quinn-udp` 0.5.15 → 0.5.16
+  (RUSTSEC-2026-0538, receive loop spinning after a truncated datagram) in the root and
+  `fuzz` trees. Their `cargo-vet` exemptions were re-pointed as in the 7.0 sweep; the
+  exemption count stayed at 649, which is the check that none was added rather than moved.
+
+  **The third changes this repository's posture on ignores, so it is stated plainly rather
+  than buried.** `RUSTSEC-2026-0459` (CVE-2026-119375, 6.8 medium) is in the bundled C
+  SQLite compiled by `libsqlite3-sys` 0.30.1, and it is now ignored in `.cargo/audit.toml`.
+  The advisory's fix is `>=0.39.0`, which is unreachable while `sqlx` 0.8 pins
+  `sqlx-sqlite` 0.8.6 — clearing it for real needs a `sqlx` major upgrade.
+
+  The justification is checkable rather than asserted: `libsqlite3-sys` reaches `Cargo.lock`
+  through `sqlx-sqlite`, which `sqlx` resolves for all its backends, but only the Postgres
+  features are enabled — and `cargo tree -i libsqlite3-sys --all-features --target all`
+  reports *"did not match any packages"*. The crate is in the lockfile and in no dependency
+  graph, so the vulnerable C is neither compiled nor shipped. That is the same ground the
+  two pre-existing entries in that file stand on (`rsa` via optional `sqlx-mysql`, `ark-*`
+  via opt-in `zk-audit`).
+
+  Two honest consequences. First, the 7.0 entry below says "no advisory was ignored"; that
+  remains true of *that* change, which added nothing to either config, but it is no longer
+  a property of the repository. Second, the justification holds only while `sqlx`'s `sqlite`
+  feature stays off, and **nothing currently detects it being turned on** — if it is, the
+  entry silently stops being true. A guard asserting the crate stays out of the graph would
+  be the durable fix, in the shape of the `zk-audit` guard repaired on 2026-11-05.
+
+  All three trees now return clean from the exact command CI runs (`cargo audit -D
+  warnings`, per tree, checking real exit codes rather than a pipeline's last stage).
+
+### Documentation
+
+- **The README now has a findable `Limitations` section.** It had none. The only
+  limitations-titled heading was "Former Limitations (Now Resolved)", opening "All four
+  previously documented limitations have been addressed" — so a reader looking for known
+  weaknesses landed on a claim of having none. The real caveats existed but were scattered
+  inline across eight separate places.
+
+  The new section groups them under assurance scope, supply chain, monitoring, feature and
+  platform scope, and maturity, and adds several that were not documented anywhere public:
+  no third-party audit has been performed; `cargo-vet` holds 650 exact-version exemptions
+  against an **empty** `audits.toml`, making it change-detection rather than review;
+  `formal/kani` and `formal/verus` lockfiles are gitignored and therefore unscanned; the
+  security gates run on schedule and pull request but **not on push**, so a regression can
+  sit on `main` for up to a week.
+
+  It also discloses the monitoring blind spot found on 2026-11-05 — three weeks of real
+  advisories reported as "posture UNKNOWN", and a CI guard that could not fail at all —
+  because a reviewer assessing verification discipline should be told that the project's
+  own checks have been wrong, how that was caught (reading logs, not trusting green), and
+  what now guards it.
+
+  "Former Limitations (Now Resolved)" is retitled "Previously Documented Limitations, Since
+  Closed" and now says explicitly that it is a record of those four, not a claim that none
+  remain.
+
+- **Removed hand-maintained proof counts from `docs/TRUSTED_COMPUTING_BASE.md`.** That
+  document calls itself "the authoritative reference for all *formally verified* claims"
+  while carrying three mutually inconsistent sets of numbers: its section headings said
+  TLA+ 6 / Verus 40 / Kani 82, its summary table said Lean 37 / Verus 668 / Kani 108, and
+  the README's generated block says TLA+ 13 / Verus 1046 / Kani 124 / Lean 32. A reviewer
+  following the README's own trust-boundary link found figures contradicting it — and the
+  doc contradicting itself on Lean, 32 in a heading against 37 in its table.
+
+  Aggregate counts are gone from the headings, the status line, and the summary table,
+  replaced by a pointer to the generated evidence block, which `make evidence-check`
+  enforces. Section 1 now states what the document *is* authoritative for — which
+  properties are proven, by which tool, in which file, and what is assumed — and that it is
+  not authoritative for totals. This follows the rule `CLAUDE.md` already sets: do not
+  restate counts, because they go stale silently and become a credibility problem.
+
+  `docs/FORMAL_SCOPE.md:102` and `docs/SECURITY_REVIEW.md:29` still carry the same stale
+  `882+ verification instances` total (and `formal/README.md` restates counts too); they
+  are untouched here and should get the same treatment. Nothing guards any of them —
+  `scripts/check-claim-anchors.sh` only asserts that the README's generated markers exist.
+
 ### Added
 
 - **A2A Agent Card signature enforcement now runs.** `CLAUDE.md` listed

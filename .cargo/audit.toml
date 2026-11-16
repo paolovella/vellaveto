@@ -21,4 +21,19 @@ ignore = [
   # dependencies (`ark-*`). `zk-audit` is opt-in and excluded from default CI paths.
   # Upstream does not yet expose a compatible fixed release path.
   "RUSTSEC-2024-0388",
+  # REVIEW BY 2027-05-31: CVE-2026-119375 in the bundled C SQLite compiled by
+  # `libsqlite3-sys`. Same shape as RUSTSEC-2023-0071 above: the crate reaches
+  # `Cargo.lock` through `sqlx-sqlite` 0.8.6, which `sqlx` 0.8 resolves for all
+  # its backends, but only the Postgres features are enabled, so SQLite is never
+  # built. Verified, not assumed: `cargo tree -i libsqlite3-sys --all-features
+  # --target all` reports "did not match any packages", i.e. the crate is in the
+  # lockfile but in no dependency graph, so the vulnerable C is neither compiled
+  # nor shipped. The advisory's fix (>=0.39.0) is unreachable while `sqlx` 0.8
+  # pins `sqlx-sqlite` 0.8.6; clearing it for real needs a `sqlx` major upgrade.
+  #
+  # This justification depends on `sqlx`'s `sqlite` feature staying off. Nothing
+  # currently detects it being turned on -- if it is, this entry silently stops
+  # being true and the CVE becomes live. A guard asserting the crate stays out of
+  # the graph would be the durable fix.
+  "RUSTSEC-2026-0459",
 ]

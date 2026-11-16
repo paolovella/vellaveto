@@ -2,7 +2,10 @@
 
 > **Version:** 3.0.0
 > **Date:** 2026-03-06
-> **Status:** Formal foundation current (882+ verification instances across Verus, Kani, TLA+, Coq, Lean 4, and Alloy)
+> **Status:** Formal foundation current across Verus, Kani, TLA+, Coq, Lean 4, and Alloy.
+> Counts are **not** maintained here — see the generated evidence block in
+> [README.md](../README.md#security), produced by `scripts/generate-evidence-manifest.sh`
+> and enforced by `make evidence-check`.
 > **Plan:** See [formal/README.md](../formal/README.md) for the proof-program detail and [../ROADMAP.md](../ROADMAP.md) for 2026 execution sequencing
 
 This document defines what Vellaveto formally verifies, what it trusts, and
@@ -15,7 +18,12 @@ is not.
 
 ## 1. Verified Properties
 
-### 1.1 TLA+ Model Checking (6 specifications, 34 safety + 8 liveness)
+What this section is authoritative for: **which** properties are proven, by which
+tool, in which file, and what is assumed. It is not authoritative for totals.
+Per-file figures below are descriptive and may lag the code; the generated evidence
+block in [README.md](../README.md#security) is the only count that CI enforces.
+
+### 1.1 TLA+ Model Checking
 
 Model checked by TLC with exhaustive state space exploration within declared
 bounds. Properties hold for all reachable states within the model.
@@ -195,7 +203,7 @@ SCOPE:    Model checked.
 MAPS TO:  vellaveto-engine/src/lib.rs (workflow constraint evaluation)
 ```
 
-### 1.2 Alloy Bounded Model Checking (2 models, 10 assertions)
+### 1.2 Alloy Bounded Model Checking
 
 | Property | Model | ID | Status |
 |----------|-------|-----|--------|
@@ -210,7 +218,7 @@ MAPS TO:  vellaveto-engine/src/lib.rs (workflow constraint evaluation)
 | ABAC permit requires no forbid | AbacForbidOverride.als | S9 | Verified |
 | ABAC no match → NoMatch | AbacForbidOverride.als | S10 | Verified |
 
-### 1.3 Lean 4 Proofs (5 files, 32 theorems, 0 sorry)
+### 1.3 Lean 4 Proofs (no `sorry`)
 
 | File | Key Theorems |
 |------|-------------|
@@ -220,7 +228,7 @@ MAPS TO:  vellaveto-engine/src/lib.rs (workflow constraint evaluation)
 | AbacForbidOverride.lean | forbid_dominance, permit_requires_no_forbid |
 | CapabilityDelegation.lean | 15 theorems on attenuation, depth, expiry |
 
-### 1.4 Coq Proofs (8 files, 45 theorems, 0 Admitted)
+### 1.4 Coq Proofs (no `Admitted`)
 
 | File | Key Theorems |
 |------|-------------|
@@ -233,7 +241,7 @@ MAPS TO:  vellaveto-engine/src/lib.rs (workflow constraint evaluation)
 | CircuitBreaker.v | C1-C5 (6 theorems) |
 | TaskLifecycle.v | T1-T3 (10 theorems) |
 
-### 1.5 Verus Deductive Verification (40 verified items on actual Rust, 0 trusted assumptions)
+### 1.5 Verus Deductive Verification (on actual Rust, 0 trusted assumptions)
 
 Verus proves properties on the actual Rust code via Z3 SMT solving. Unlike
 bounded model checking, Verus proofs hold for ALL possible inputs — no bounds,
@@ -296,7 +304,7 @@ Path idempotence is also independently proved in Lean, Coq, and Kani.
 
 Source: `formal/verus/verified_core.rs` (lemma_path_block_is_deny, lemma_network_block_is_deny)
 
-### 1.6 Kani Bounded Model Checking (82 harnesses on actual Rust)
+### 1.6 Kani Bounded Model Checking (on actual Rust)
 
 #### K1-K9: Core Properties
 
@@ -450,7 +458,9 @@ Kani operates on extracted Rust code verified to match production code via
 - `formal/kani/src/constraint.rs` ↔ `vellaveto-engine/src/constraint_eval.rs`
 - `formal/kani/src/task.rs` ↔ `vellaveto-mcp/src/task_state.rs`
 
-**Total: 882+ verification instances across 6 tools (668 Verus + 108 Kani + 14 TLA+ specs + 45 Coq + 37 Lean + 10 Alloy).**
+**Total across 6 tools (Verus, Kani, TLA+, Coq, Lean 4, Alloy).** For the current
+per-tool counts see the generated evidence block in [README.md](../README.md#security);
+they are not restated here because a hand-maintained total is exactly what drifted.
 
 ---
 
@@ -573,7 +583,7 @@ Formal verification runs in CI via `.github/workflows/formal-verification.yml`.
 - **No Admitted (Coq):** CI greps for `Admitted` markers — any found = hard failure
 - **All harnesses pass (Kani):** Every harness must report `SUCCESSFUL`
 - **Code sync (Kani):** CI runs 9 production-parity unit tests verifying extracted code matches production behavior (identical test vectors, identical expected results)
-- **All specs checked (TLA+):** All 6 specifications run through TLC
+- **All specs checked (TLA+):** Every specification is run through TLC
 - **Verus verification (Verus):** Both `verified_core.rs` and `verified_dlp_core.rs` must report 0 errors
 
 ### Planned CI Additions (Phase 0+)
@@ -588,20 +598,11 @@ PR-level gating on security-critical paths will be added for:
 
 ## 7. Verification Statistics
 
-| Metric | Count |
-|--------|-------|
-| TLA+ safety invariants | 51 |
-| TLA+ liveness properties | 13 |
-| Alloy assertions | 10 |
-| Lean 4 theorems | 37 |
-| Coq theorems | 45 |
-| Verus verified items (ALL inputs, deductive) | 668 |
-| Kani proof harnesses (bounded) | 108 |
-| **Total verification instances** | **882+** |
-| Rust unit/integration tests | 11,490+ |
-| Fuzz targets | 24 |
-| Property-based tests (proptest) | ~50 |
-| Audit rounds | 254 |
+Counts previously tabulated here drifted from the generated manifest (and from
+this document's own section headings) because they were maintained by hand. The
+authoritative totals are the generated evidence block in
+[README.md](../README.md#security); regenerate with `make evidence` and verify
+with `make evidence-check`.
 
 ---
 
