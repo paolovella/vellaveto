@@ -1,10 +1,21 @@
 # Vellaveto Roadmap
 
-> **Version:** 6.1.1 (released, Phase 1-5 foundation shipped + R259-R267 hardening)
-> **Updated:** 2026-03-30
-> **Status:** Phase 0-5 foundation code delivered + runtime wiring complete + 11 architectural hardening changes (R259-R267). 11,571+ Rust tests, 556+ SDK tests, 910+ formal verification instances, all CI green.
-> **Current focus:** Phase 3-5 deepening, compliance evidence factory, supply-chain trust
+> **Updated:** 2026-11-16
+> **Status:** Phase 0-2 delivered with runtime wiring; Phase 3 not started. Test and
+> proof counts are deliberately **not** restated here — see the generated evidence block
+> in [README.md](README.md#security), produced by
+> `scripts/generate-evidence-manifest.sh` and enforced by `make evidence-check`. Counts
+> kept by hand in this file drifted badly enough to contradict it.
+> **Current focus:** Phase 2 deepening; promoting advisory detection layers to enforcement
 > **Strategic position:** fail-closed control plane for MCP and tool-calling agents
+
+## Not Shipped
+
+This document records a lot of completed work, so read this first: the live list of what
+is **missing** is [Roadmap](README.md#roadmap) in the README. The headline gaps are the
+~30 detection modules that run in advisory mode rather than blocking, the absence of any
+third-party security audit, 650 `cargo-vet` exemptions against an empty `audits.toml`,
+and Phase 3 (multi-agent containment), which has not started.
 
 ---
 
@@ -414,7 +425,7 @@ Before opening large new tracks, the current dirty worktree should be reduced in
 
 ---
 
-### Phase 3: Multi-Agent and Advanced Containment
+### Phase 3: Multi-Agent and Advanced Containment — NOT STARTED
 
 **Window**
 - Q3 2026

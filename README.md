@@ -24,6 +24,7 @@
     <a href="#how-it-compares">Compare</a> &middot;
     <a href="#security">Security</a> &middot;
     <a href="#limitations">Limitations</a> &middot;
+    <a href="#roadmap">Roadmap</a> &middot;
     <a href="#architecture">Architecture</a> &middot;
     <a href="#documentation">Docs</a>
   </p>
@@ -117,7 +118,7 @@ VellaVeto enforces five boundary invariants at the runtime surface where agents 
 These invariants are enforced by concrete runtime capabilities:
 
 - **Policy engine** — glob/regex/domain matching, parameter constraints, time windows, call limits, per-tool quotas, secret substitution, declarative policy templates, Cedar-style ABAC, Wasm plugins. <5ms P99 evaluation.
-- **Threat detection** — injection, tool squatting, rug pulls, schema poisoning, DLP, memory poisoning, multi-agent collusion, semantic output contracts, trust-tier containment, contagion controls, response metadata stripping, delegation chain enforcement, jailbreak patterns, token leakage, system prompt leak, browser agent attacks, output anomalies, denial-of-wallet, cascade failure detection, exfiltration path analysis, server fingerprint drift, goal drift, A2A integrity, NHI overpermission, agent behavioral baseline, prompt template injection, ETDI signature verification, MINJA defense, and [control/data channel separation](docs/CHANNEL_SEPARATION.md) (source-class tainting, intent scope, behavioral sequence analysis). 30+ detection layers, not just regex.
+- **Threat detection** — injection, tool squatting, rug pulls, schema poisoning, DLP, memory poisoning, multi-agent collusion, semantic output contracts, trust-tier containment, contagion controls, response metadata stripping, delegation chain enforcement, jailbreak patterns, token leakage, system prompt leak, browser agent attacks, output anomalies, denial-of-wallet, cascade failure detection, exfiltration path analysis, server fingerprint drift, goal drift, A2A integrity, NHI overpermission, agent behavioral baseline, prompt template injection, ETDI signature verification, MINJA defense, and [control/data channel separation](docs/CHANNEL_SEPARATION.md) (source-class tainting, intent scope, behavioral sequence analysis). 30+ detection layers, not just regex. Injection and DLP **block** on a finding by default in the shipped proxies; most of the other layers are **advisory** — they scan, write an ACIS audit entry, and allow the call. Detection coverage and blocking coverage are different numbers, and [Limitations](#limitations) says which is which.
 - **Identity and access** — OAuth 2.1/JWT, OIDC/SAML, RBAC, capability delegation, DPoP (RFC 9449) on the HTTP proxy's OAuth path, non-human identity lifecycle.
 - **Topology discovery** — auto-discover MCP servers, tools, and resources. Detect drift, tool shadowing, and namespace collisions.
 - **Audit and compliance** — tamper-evident logs (SHA-256 + Merkle + Ed25519), ACIS decision envelopes, ZK proofs, OTel-compatible span generation, evidence packs mapped to EU AI Act, SOC 2, DORA, NIS2, NIST AI 600-1, ISO 42001, and 6 more frameworks. Annex IV documentation, Article 73 incident reports, and FRIA data export generators.
@@ -374,7 +375,17 @@ Lower crates never depend on higher crates. The boundary contract (`vellaveto-ty
 
 ## Boundary Capabilities
 
-| | What It Enforces | Docs |
+**Which of these block, and which only report.** The enforcement path is the policy
+engine (`Verdict::Deny`), approval gates on irreversible actions, TopologyGuard's
+fail-closed denial of unknown tools, and injection and DLP scanning — the latter two
+block on a finding by default in the shipped proxies (`detection.block_on_injection` and
+`dlp.block_on_finding` both default to `true`, and `vellaveto-proxy` and
+`vellaveto-shield` pass that config through to the relay). Most of the remaining
+detection layers are **advisory**: they scan, emit an ACIS audit entry, and allow the
+call. They are observability, not a block, and the table below is a coverage map rather
+than a list of things that deny.
+
+| | What It Covers | Docs |
 |---|---|---|
 | **Policy Engine** | Glob/regex/domain matching, parameter constraints, time windows, call limits, per-tool quotas, secret substitution, declarative policy templates, action sequences, Cedar-style ABAC, Wasm plugins. Pre-compiled patterns, <5ms P99, decision cache. | [Policy](docs/POLICY.md) |
 | **Threat Detection** | 30+ detection layers: injection (Aho-Corasick + NFKC + obfuscation decode), tool squatting, rug pulls, schema poisoning, DLP, memory poisoning, multi-agent collusion, semantic output contracts, contagion controls, jailbreak patterns, token leakage, system prompt leak, browser agent attacks, output anomalies, denial-of-wallet, cascade failures, exfiltration path analysis, server fingerprint drift, goal drift, A2A integrity, NHI overpermission, agent baseline, prompt template injection, ETDI, MINJA, and containment-aware audit context. Maps to [OWASP Agentic Top 10](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/). | [Threat Model](docs/THREAT_MODEL.md) |
@@ -521,6 +532,13 @@ are hedged the way they are.
 
 ### Monitoring
 
+- **Most detection layers are advisory, not enforcing.** The enforcement path is the
+  policy engine, approval gates, TopologyGuard, and injection/DLP blocking. The ~30
+  modules wired in during the March 2026 activation sweep run in advisory mode: the relay
+  carries explicit `let verdict = Verdict::Allow; // Log-only detection` sites, so those
+  findings are audited and allowed. Promoting them to enforcement is the largest item on
+  the [Roadmap](#roadmap) — each needs a config gate, a denial path, transport parity and
+  tests. Read "30+ detection layers" as coverage, not as thirty things that deny.
 - **The security gates do not run on push.** `dependency-monitor` is daily, `security-audit`
   and `cargo-deny` are weekly (Mondays); all three also run on pull requests. A regression
   that reaches `main` can therefore go unflagged for up to a week.
@@ -560,6 +578,55 @@ are hedged the way they are.
 - **New project.** No production deployments we can point to, and effectively no external
   community yet. The [comparison table](#how-it-compares) is explicit that stars and
   institutional backing are where the alternatives lead.
+
+## Roadmap
+
+What is not built yet, grouped by the kind of gap. No dates — a date is the next thing to
+go stale. [ROADMAP.md](ROADMAP.md) carries the phase-level execution detail.
+
+### Promote advisory detection to enforcement
+
+The largest item, because it is the one that changes what the product *guarantees* rather
+than what it observes. Around 30 detection modules currently scan, audit, and allow. Each
+needs a config gate, a denial path, parity across stdio/HTTP/WebSocket/gRPC, and tests
+before it can honestly be called enforcement. Until then they are observability. See
+[Limitations](#limitations).
+
+### Independent assurance
+
+| Gap | Why it matters |
+|---|---|
+| Third-party security audit | Everything today is self-assessed. [OSTIF scope](docs/OSTIF_AUDIT_SCOPE.md) is an application, not a completed audit. |
+| First-party `cargo-vet` audits | 650 exemptions against an empty `audits.toml` means no dependency has been reviewed — the gate detects change, it does not vet. |
+| A third-party gateway benchmarked on MCPSEC | We wrote the benchmark and the gateway. A number for someone else's gateway is what would make it a comparison. |
+
+### Coverage
+
+| Gap | Current state |
+|---|---|
+| Windows target | Not built or tested; POSIX-only env allowlist, `0o600` hardening is a Unix no-op. |
+| Non-US PII patterns | Seven US-centric patterns. No IBAN, NHS number, EU national ID, passport, or non-US phone. |
+| File paths and personal names | Not detected at all. |
+| Traffic padding | Implemented but not wired — the framing needs peer negotiation. |
+| PQC signatures | Hybrid Ed25519 + ML-DSA-65 covers audit checkpoints and rotation manifests only; not evidence packs, canaries, agent cards, or capability tokens. |
+| DPoP | HTTP proxy OAuth path only, not every transport. |
+| A2A card verification | A2A listener only; the stdio relay does not verify Agent Cards, and `a2a` is off by default. |
+| Warrant canary issuance | Verification ships; issuance and publication do not, and none is published. |
+
+### CI and supply chain
+
+| Gap | Why it matters |
+|---|---|
+| Guard that `libsqlite3-sys` stays out of the dependency graph | Its advisory suppression is justified only while `sqlx`'s `sqlite` feature is off. Nothing detects that changing, so the justification could silently stop being true. |
+| Advisory scanning for `formal/kani` and `formal/verus` | Their lockfiles are gitignored, so `--locked` scanning cannot run and those trees are unscanned. |
+| Security gates on push | They run on schedule and pull request only, so a regression can sit on `main` for up to a week. |
+| Count drift guards for the remaining docs | `docs/FORMAL_SCOPE.md` and `docs/SECURITY_REVIEW.md` still restate totals by hand; only the README's generated block is CI-enforced. |
+
+### Product phases
+
+Phase 2 (policy, approval and operator productization) is active. Phase 3 — multi-agent
+and advanced containment, the case where single-agent mediation is easiest to route
+around — has not started. Both are detailed in [ROADMAP.md](ROADMAP.md).
 
 ### Compliance & Regulatory Frameworks
 
