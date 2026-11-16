@@ -146,6 +146,38 @@ failed_all=(); for ((i = 0; i < n; i++)); do failed_all+=(coloured_failed); done
 check "all ${n} trees FAILED (coloured) -> reached, i.e. a FINDING not UNKNOWN" \
   "yes" "$(reached "${failed_all[@]}")"
 
+# ---------------------------------------------------------------------------
+# step_verdict: the closing report that names what failed.
+#
+# The coverage block the monitor prints at the end answers "did each advisory
+# scan run", and for a long time that was ALL it answered. A run on 2026-11-16
+# therefore ended with four lines reading clean, "cargo audit: completed", and
+# `exit 1`, with the actual cause about 1,700 lines earlier -- so the bottom of
+# a failed log, which is where a reader starts, carried no usable information.
+# step_verdict exists to make the last lines of the log state the outcome.
+# ---------------------------------------------------------------------------
+eval "$(extract step_verdict)"
+
+check "a zero exit status is a pass"            "pass"          "$(step_verdict 0)"
+check "a non-zero status is named with its code" "FAIL (exit 1)" "$(step_verdict 1)"
+check "an unusual status is still a failure"     "FAIL (exit 2)" "$(step_verdict 2)"
+# 101 is cargo's own abort code; nothing about it should read as a pass.
+check "cargo's abort code is a failure"          "FAIL (exit 101)" "$(step_verdict 101)"
+
+# The monitor must report a verdict for all five steps, not just the two whose
+# coverage it describes. If a sixth step is added, this count is the reminder
+# that it needs a verdict line too.
+checks=$((checks + 1))
+step_lines="$(grep -cE '^printf .*step_verdict' "${MONITOR}" || true)"
+if [[ "${step_lines}" -eq 5 ]]; then
+  echo "  ok    all 5 monitor steps report a verdict"
+else
+  echo "  FAIL  ${step_lines} step verdict lines in the monitor, expected 5."
+  echo "        A step without a verdict line can fail the job while the closing"
+  echo "        report still reads as clean, which is the whole defect this covers."
+  failures=$((failures + 1))
+fi
+
 echo
 if [[ "${failures}" -eq 0 ]]; then
   echo "dependency-monitor verdict tests: ${checks} checks, all passed"
