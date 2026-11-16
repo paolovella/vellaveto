@@ -539,9 +539,20 @@ are hedged the way they are.
   findings are audited and allowed. Promoting them to enforcement is the largest item on
   the [Roadmap](#roadmap) — each needs a config gate, a denial path, transport parity and
   tests. Read "30+ detection layers" as coverage, not as thirty things that deny.
-- **The security gates do not run on push.** `dependency-monitor` is daily, `security-audit`
-  and `cargo-deny` are weekly (Mondays); all three also run on pull requests. A regression
-  that reaches `main` can therefore go unflagged for up to a week.
+- **The security gates do not run on push.** `dependency-monitor` is daily,
+  `supply-chain-scan` is daily, and `security-audit` and `cargo-deny` are weekly (Mondays);
+  all four also run on pull requests. A regression that reaches `main` can therefore go
+  unflagged for up to a week.
+- **Advisories in build and test dependencies are reported, not blocked.**
+  `supply-chain-scan` covers the ecosystems cargo does not reach — six npm projects, two Go
+  modules, the pinned Python requirements and the Java SDK — but it fails only on findings
+  reachable from a production install. Dev-only findings are listed and counted without
+  gating, because they cannot reach a deployed artifact and blocking on eslint and jest
+  transitives would stop unrelated work. A compromised build host is still a real
+  supply-chain risk, so the count is not zero and is not meant to be read as zero. The
+  classification comes from each lockfile's own dependency groups and is recomputed every
+  run, so a package that moves into production starts blocking without anyone remembering
+  to change a list.
 - **The monitoring has had a blind spot on its own failure path.** From 2026-10-13 the
   dependency monitor reported 17 real RustSec advisories as *"advisory posture UNKNOWN"* for
   three weeks: its verdict parser matched plain text, while cargo-deny emits a

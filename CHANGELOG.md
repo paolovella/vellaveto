@@ -9,6 +9,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Cleared seven advisories in `golang.org/x/net`, and closed the two gaps that hid them.**
+  `golang.org/x/net` sat at v0.58.0 in `terraform-provider-vellaveto`, and
+  `golang.org/x/net/http2` is genuinely in the compiled graph: `go list -deps ./...` resolves
+  it through `google.golang.org/grpc` v1.83.2, so this was not a lockfile-only entry. Five of
+  the seven are HTTP/2 server-side denial of service — Trailer-header memory exhaustion
+  (CVE-2026-78659), malformed framing headers accepted by the transport (CVE-2026-78660),
+  CPU exhaustion from repeated initial window changes (CVE-2026-78669), double flow-control
+  refund on server streams (CVE-2026-78663) and a server crash from an HPACK encoder race
+  (CVE-2026-97032) — fixed in v0.60.0. The other two are in `golang.org/x/net/html`
+  (CVE-2026-78661, CVE-2026-97045), fixed in v0.62.0; `x/net/html` is not in the build graph,
+  but v0.62.0 clears all seven without a suppression, so that is the version taken.
+
+  Practical exposure was moderate at most: the provider's grpc channel is a local pipe to
+  Terraform rather than an exposed listener. Fixed regardless, because the vulnerable code
+  compiles into a published provider where any downstream scanner will report it.
+
+  **User-facing consequence.** Every fixed x/net version — 0.60.0, 0.61.0 and 0.62.0 alike —
+  declares `go 1.26.0`, so the provider's own go directive moves 1.25.0 → 1.26.0. No
+  available fix avoids this. `surface-ci.yml` resolves the toolchain from `go-version-file`
+  so CI follows automatically, but **building the Terraform provider now requires Go 1.26 or
+  newer**. `golang.org/x/sys` (0.47.0 → 0.49.0) and `golang.org/x/text` (0.41.0 → 0.43.0)
+  come along as transitive requirements; the `go.sum` diff is exactly those three modules.
+
+  Two independent gaps let this accumulate, and both are now closed. Dependabot could not
+  propose it: `dependabot.yml` carried no `allow` block, and Dependabot's gomod default is
+  direct dependencies only, so an `// indirect` module is never bumped however many
+  advisories it collects. Both gomod blocks now set `allow: dependency-type: "all"`; each
+  already groups `patterns: ["*"]` into one PR, so coverage widens without PR volume.
+
+  And nothing was looking. Dependabot watches 17 ecosystems, but every advisory-failing gate
+  was Rust-only, plus trivy on container images at publish and release. The new
+  `supply-chain-scan` workflow runs `scripts/run-supply-chain-scan.sh` daily and on manifest
+  changes, driving osv-scanner over eleven manifests: six `package-lock.json`, two `go.mod`,
+  two pinned Python requirements files and one `pom.xml`. `Cargo.lock` is deliberately
+  excluded — Rust has three gates and three justified suppressions in `.cargo/audit.toml`
+  already, and scanning it here would create a second place where a Rust suppression has to
+  be kept true.
+
+  The gate blocks on production findings and reports dev-only ones without gating. That
+  split comes from each lockfile's own dependency groups rather than a list of suppressed
+  advisory IDs, so it cannot rot: it is recomputed every run, and a package that becomes
+  reachable from production starts blocking on its own, where an ID-based ignore with an
+  expiry date would have hidden it. `optional` alone counts as production, since an
+  optionalDependency is installed in production when its platform matches. The six current
+  dev-only findings — minimatch, zod and glob, reached only through eslint and jest — are
+  reported and not blocking.
+
+  Fail-closed behaviour was verified by triggering it, not by reading the code: a listed
+  manifest that disappears, a lockfile that parses to zero packages, and an unexpected
+  scanner exit status each report UNKNOWN and exit 1. `--all-packages` is load-bearing
+  rather than cosmetic, because osv-scanner's JSON `results` array is empty on a clean scan
+  and without the flag "examined 283 packages and found nothing" is byte-identical to
+  "examined nothing at all". A coverage guard reports manifest shapes on disk that the
+  script does not scan, including ones it does not handle at all such as pnpm or uv
+  lockfiles, so a new project cannot quietly go unscanned.
+
+- **The dependency monitor now reports a verdict per step, not just coverage.** Its closing
+  block said whether `cargo audit` and `cargo deny` had *run* and nothing about the other
+  three steps, so the 2026-11-16 run ended with four lines reading clean, `cargo audit:
+  completed`, and `exit 1`, with the cause roughly 1,700 lines above — nothing usable at the
+  bottom of the log, which is where a reader of a failed run starts. It now prints pass or
+  fail for all five steps and names which failed. In October the same block erred the other
+  way, calling 17 real findings UNKNOWN for three weeks; reporting coverage in place of a
+  verdict produces both failures.
+
 - **Cleared three advisories that landed after the November sweep, and suppressed one with
   a checkable justification.** `security-audit` had been red on `main` since 2026-11-09 and
   `dependency-monitor` daily since 2026-11-13, correctly: `cargo audit -D warnings` reported

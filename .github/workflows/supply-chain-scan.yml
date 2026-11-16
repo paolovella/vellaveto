@@ -1,0 +1,60 @@
+name: Supply Chain Scan
+
+# Advisory scanning for the ecosystems the cargo gates do not reach: npm, Go,
+# Python and Java. Until this workflow, Dependabot watched 17 ecosystems while
+# every advisory-FAILING gate was Rust-only, so a known CVE outside cargo failed
+# nothing. golang.org/x/net sat at v0.58.0 with seven advisories, compiled in
+# through grpc, and no gate reported it.
+#
+# Runs on pull requests that touch a manifest, and daily, offset from the cargo
+# monitor's 03:00 so a red morning points at one job rather than two.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '41 4 * * *'
+  pull_request:
+    paths:
+      - '**/package-lock.json'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '**/pom.xml'
+      - 'sdk/python/requirements*.txt'
+      - 'scripts/run-supply-chain-scan.sh'
+      - 'scripts/tests/supply-chain-scan-verdict.sh'
+      - '.github/workflows/supply-chain-scan.yml'
+
+permissions: {}
+
+jobs:
+  supply-chain-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: 'stable'
+      - name: Install osv-scanner
+        # Version-pinned and verified through the Go checksum database, which is
+        # why this is preferred over downloading a release binary and hard-coding
+        # a hash that would then need hand-maintaining.
+        run: go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.1
+      - name: Verdict classification tests
+        # Run before the scan itself: these cover the classifier that decides
+        # what the scan's output MEANS, and a broken classifier makes the scan
+        # result worthless rather than merely wrong.
+        run: bash scripts/tests/supply-chain-scan-verdict.sh
+      - name: Run supply chain scan
+        run: |
+          chmod +x scripts/run-supply-chain-scan.sh
+          scripts/run-supply-chain-scan.sh target/security
+      - name: Upload supply chain telemetry
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: supply-chain-scan-logs
+          path: target/security

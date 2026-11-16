@@ -377,10 +377,50 @@ else
   echo "  cargo deny:  INCOMPLETE - $(deny_verdict_count)/${#DENY_TREES[@]} trees reached a verdict; advisory posture for the rest is UNKNOWN"
 fi
 
+# Per-step verdicts, and the name of whatever failed.
+#
+# The block above reports COVERAGE -- whether each advisory scan ran -- which is
+# not the same question as whether it passed, and on its own it reads as
+# reassuring even when the job is about to fail. On 2026-11-16 this log ended
+# with four "clean" lines, "cargo audit: completed", and `exit 1`, while the
+# reason sat roughly 1,700 lines further up. A reader who opens a failed run at
+# the bottom, which is where a failed run opens, learned nothing from it.
+#
+# Reporting coverage in place of a verdict is the same mistake this script made
+# the other way round in October, when it announced "ADVISORY SCAN DID NOT RUN"
+# over 17 genuine vulnerabilities for three weeks. See
+# scripts/tests/dependency-monitor-verdict.sh.
+step_verdict() {
+  # $1 = the step's exit status. Only 0 is a pass; everything else is a finding
+  # or a failure to conclude, and the step's own message above says which.
+  if [[ "$1" -eq 0 ]]; then
+    echo pass
+  else
+    echo "FAIL (exit $1)"
+  fi
+}
+
+echo "Step verdicts this run (what each step FOUND, not merely that it ran):"
+printf '  %-34s %s\n' "1/5 cargo audit"                 "$(step_verdict "${audit_status}")"
+printf '  %-34s %s\n' "2/5 cargo deny"                  "$(step_verdict "${deny_status}")"
+printf '  %-34s %s\n' "3/5 cargo vet"                   "$(step_verdict "${vet_status}")"
+printf '  %-34s %s\n' "4/5 duplicate baseline"          "$(step_verdict "${duplicates_status}")"
+printf '  %-34s %s\n' "5/5 cargo metadata"              "$(step_verdict "${metadata_status}")"
+
+failed_steps=()
+[[ ${audit_status} -ne 0 ]] && failed_steps+=("cargo audit")
+[[ ${deny_status} -ne 0 ]] && failed_steps+=("cargo deny")
+[[ ${vet_status} -ne 0 ]] && failed_steps+=("cargo vet")
+[[ ${duplicates_status} -ne 0 ]] && failed_steps+=("duplicate baseline")
+[[ ${metadata_status} -ne 0 ]] && failed_steps+=("cargo metadata")
+
 # A scan that could not run is not a pass, so the job still fails either way.
 # Only the wording and the coverage report above distinguish the two cases.
 final_status=0
-if [[ ${audit_status} -ne 0 || ${deny_status} -ne 0 || ${vet_status} -ne 0 || ${duplicates_status} -ne 0 || ${metadata_status} -ne 0 ]]; then
+if [[ ${#failed_steps[@]} -gt 0 ]]; then
   final_status=1
+  echo "dependency monitor: FAILED at ${#failed_steps[@]} of 5 steps -- ${failed_steps[*]}. Each step's own message above says what it found; this line only says where to look." >&2
+else
+  echo "dependency monitor: all 5 steps passed."
 fi
 exit ${final_status}

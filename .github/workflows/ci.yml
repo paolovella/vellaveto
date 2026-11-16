@@ -115,6 +115,8 @@ jobs:
             scripts/report-formal-tooling.sh \
             scripts/run-dependency-monitor.sh \
             scripts/tests/dependency-monitor-verdict.sh \
+            scripts/run-supply-chain-scan.sh \
+            scripts/tests/supply-chain-scan-verdict.sh \
             scripts/clippy.sh
 
       - name: Format
@@ -141,6 +143,13 @@ jobs:
       # bytes that broke it.
       - name: Check dependency monitor verdict classification
         run: bash scripts/tests/dependency-monitor-verdict.sh
+
+      - name: Check supply chain scan verdict classification
+        # The classifier that decides what an osv-scanner run MEANS. It is
+        # tested here as well as in supply-chain-scan.yml because the scan
+        # workflow only triggers on manifest changes, while an edit to the
+        # classifier itself can arrive through any pull request.
+        run: bash scripts/tests/supply-chain-scan-verdict.sh
 
       # This guard could not fail, two independent ways, so it has been passing
       # vacuously since it was written:
