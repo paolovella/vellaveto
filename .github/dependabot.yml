@@ -183,6 +183,14 @@ updates:
       day: "monday"
       time: "07:25"
       timezone: "UTC"
+    # Go marks transitive modules `// indirect`, and Dependabot's default for
+    # gomod is direct dependencies only. Without this, an indirect module can
+    # carry known CVEs indefinitely with no PR ever proposed: golang.org/x/net
+    # sat at v0.58.0 with seven advisories, reachable through grpc's http2, for
+    # exactly this reason. The `groups` block below collapses the result into one
+    # PR per directory per run, so this widens coverage, not PR volume.
+    allow:
+      - dependency-type: "all"
     groups:
       go-sdk:
         patterns:
@@ -201,6 +209,14 @@ updates:
       day: "monday"
       time: "07:30"
       timezone: "UTC"
+    # Go marks transitive modules `// indirect`, and Dependabot's default for
+    # gomod is direct dependencies only. Without this, an indirect module can
+    # carry known CVEs indefinitely with no PR ever proposed: golang.org/x/net
+    # sat at v0.58.0 with seven advisories, reachable through grpc's http2, for
+    # exactly this reason. The `groups` block below collapses the result into one
+    # PR per directory per run, so this widens coverage, not PR volume.
+    allow:
+      - dependency-type: "all"
     groups:
       terraform-provider:
         patterns:
