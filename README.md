@@ -23,6 +23,7 @@
     <a href="#quick-start">Quick Start</a> &middot;
     <a href="#how-it-compares">Compare</a> &middot;
     <a href="#security">Security</a> &middot;
+    <a href="#limitations">Limitations</a> &middot;
     <a href="#architecture">Architecture</a> &middot;
     <a href="#documentation">Docs</a>
   </p>
@@ -434,9 +435,11 @@ behind a non-default feature run in the `feature-matrix` job in
 
 The live property catalog is maintained in [formal/README.md](formal/README.md); the trust boundary and assumptions are documented in [docs/TRUSTED_COMPUTING_BASE.md](docs/TRUSTED_COMPUTING_BASE.md).
 
-### Former Limitations (Now Resolved)
+### Previously Documented Limitations, Since Closed
 
-All four previously documented limitations have been addressed:
+Four limitations documented in earlier releases have since been closed. This is a
+record of those four only — it is not a claim that none remain. Current ones are in
+[Limitations](#limitations) below.
 
 - **Cross-call DLP** — `SessionDlpTracker` with overlap buffers detects secrets split across multiple tool calls within a session (~150 bytes state per field). See [`cross_call_dlp.rs`](vellaveto-mcp/src/inspection/cross_call_dlp.rs).
 - **Grammar-validated injection** — JSON Schema `pattern` constraints compiled to DFAs provide a positive security model (Phase 72). The existing Aho-Corasick pre-filter remains as defense-in-depth. Covered by MCPSEC A14 regression tests (ours, not an independent check).
@@ -470,6 +473,93 @@ cargo run -p mcpsec -- --target http://localhost:3000 --format markdown
 ```
 
 See [mcpsec/README.md](mcpsec/README.md) for properties, attack classes, and methodology.
+
+## Limitations
+
+Known weaknesses, in the order a reviewer should weigh them. This list is maintained
+deliberately: several items below are the reason specific claims elsewhere in this README
+are hedged the way they are.
+
+### Assurance scope
+
+- **No third-party security audit has been performed.** The [bug bounty](SECURITY_BOUNTY.md)
+  (HackerOne + Huntr) is enrolled and [docs/OSTIF_AUDIT_SCOPE.md](docs/OSTIF_AUDIT_SCOPE.md)
+  is an application scope document. Neither is a completed external review.
+- **The adversarial audit sweeps are internal.** They are our own red-team exercises, so we
+  chose both the attacks and the pass criteria. They find real bugs; they are not independent
+  assurance.
+- **MCPSEC is self-authored**, benchmark and gateway alike — see the caveat in
+  [MCPSEC Benchmark](#mcpsec-benchmark). No third-party gateway has been measured.
+- **Formal verification covers named properties, not the system.** What is proven, what is
+  trusted, and what is explicitly *not* verified is in
+  [docs/TRUSTED_COMPUTING_BASE.md](docs/TRUSTED_COMPUTING_BASE.md), including trusted
+  components, abstraction boundaries, and sound over-approximations. Two scope limits worth
+  being concrete about: the **entire dependency tree is trusted, not verified** — that
+  document lists rustc/LLVM, tokio, serde, rustls, ring and others as assumed correct — and
+  the Python, TypeScript, Go and Java SDKs are outside the reach of these Rust-based tools
+  altogether.
+
+### Supply chain
+
+- **`cargo-vet` is change-detection, not review.** `supply-chain/audits.toml` contains **zero
+  first-party audits**; all **650** dependency entries are *exemptions* pinned to an exact
+  version. What the gate actually enforces is that a new version must be re-blessed
+  deliberately — nobody has reviewed those crates' source.
+- **One advisory is suppressed.** `RUSTSEC-2026-0459` (CVE-2026-119375, 6.8 medium, bundled C
+  SQLite) is ignored in `.cargo/audit.toml`, because `libsqlite3-sys` reaches `Cargo.lock`
+  via `sqlx-sqlite` while only `sqlx`'s Postgres features are enabled. Checkable rather than
+  asserted: `cargo tree -i libsqlite3-sys --all-features --target all` reports *"did not match
+  any packages"*, so the vulnerable C is never compiled or shipped. The two older entries in
+  that file are suppressed on the same grounds. If `sqlx`'s `sqlite` feature is ever enabled,
+  that justification silently stops holding and **nothing currently detects it**.
+- **Two dependency trees are unscanned.** `formal/kani/Cargo.lock` and
+  `formal/verus/Cargo.lock` are gitignored, so `cargo audit` and `cargo deny` cannot run
+  `--locked` against them.
+- **Dependabot cannot land a Rust bump unaided.** Exemptions are exact-version and Dependabot
+  never edits `supply-chain/config.toml`, so every cargo update arrives failing the
+  supply-chain gate and needs a manual companion edit.
+
+### Monitoring
+
+- **The security gates do not run on push.** `dependency-monitor` is daily, `security-audit`
+  and `cargo-deny` are weekly (Mondays); all three also run on pull requests. A regression
+  that reaches `main` can therefore go unflagged for up to a week.
+- **The monitoring has had a blind spot on its own failure path.** From 2026-10-13 the
+  dependency monitor reported 17 real RustSec advisories as *"advisory posture UNKNOWN"* for
+  three weeks: its verdict parser matched plain text, while cargo-deny emits a
+  colour-escaped verdict under CI. Separately, the `zk-audit` opt-in guard could not fail at
+  all — `rg` was not installed on the runner, *and* its pattern matched nothing even when the
+  condition held. Both were found by reading job logs rather than trusting green check marks,
+  and both were fixed on 2026-11-05 with a regression test that feeds the classifier real
+  coloured bytes. The fix is confirmed in production. The general lesson applies to every
+  badge above: a green check is a claim about a check, not about the code.
+
+### Feature and platform scope
+
+- **No Windows target.** Release binaries cover Linux (x86_64, aarch64, musl) and macOS
+  (x86_64, aarch64); CI runs on Linux. See [Platform support](#consumer-shield--protect-users-from-ai-providers).
+- **PII detection is seven US-centric patterns**, with no file paths and no personal names —
+  see [Scope of PII detection](#consumer-shield--protect-users-from-ai-providers).
+- **Warrant canary is verification only.** Issuance and publication are not shipped and no
+  canary has been published.
+- **Traffic padding is not wired.** Its framing needs peer negotiation.
+- **Post-quantum signatures are partial.** Hybrid Ed25519 + ML-DSA-65 covers audit
+  checkpoints and rotation manifests, not evidence packs, warrant canaries, agent cards, or
+  capability tokens.
+- **DPoP is scoped to the HTTP proxy's OAuth path**, not every transport.
+- **A2A Agent Card signature enforcement runs on the A2A listener only.** The stdio relay
+  does not verify cards, and the `a2a` feature is off by default.
+- **`schema_poisoning` defaults to `false`**, which is why MCPSEC A14.1–A14.4 fail against the
+  shipped `vault` preset rather than indicating a missing capability.
+- **Signed checkpoints are opt-in and need a persistent key.** Without
+  `VELLAVETO_SIGNING_KEY` a fresh key is generated per process and checkpoints do not survive
+  a restart. Signatures attest authorship, not time.
+
+### Maturity
+
+- **New project.** No production deployments we can point to, and effectively no external
+  community yet. The [comparison table](#how-it-compares) is explicit that stars and
+  institutional backing are where the alternatives lead.
 
 ### Compliance & Regulatory Frameworks
 
