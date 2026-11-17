@@ -6,10 +6,22 @@
 # Empty by default; add entries only when actively justified.
 #
 # This file is load-bearing even though `deny.toml` also checks advisories:
-# `deny.toml` sets `unmaintained = "workspace"`, which narrows that class to
-# workspace-declared crates, so cargo-deny skips a transitive unmaintained
-# crate that `cargo audit -D warnings` still flags. The two tools diverge by
-# configuration on purpose — do not "reconcile" them by widening deny.toml.
+# cargo-audit reads it from its working directory only, which is why each
+# lockfile is audited from its own directory and why the desktop app keeps its
+# own `src-tauri/.cargo/audit.toml` rather than widening root policy.
+#
+# On the unmaintained class the two tools no longer disagree, and that is
+# deliberate. `deny.toml` sets `unmaintained = "none"` and cargo-audit is not
+# given `-D unmaintained`, so an unmaintained crate is REPORTED and does not
+# block: the dependency monitor prints the kinds and counts every run. An
+# earlier version of this comment described `unmaintained = "workspace"` as
+# producing warnings that "do not hard-block builds"; it hard-blocked, because
+# cargo-deny has no warn level for the class. See the comment on `unmaintained`
+# in deny.toml for what changed and why.
+#
+# Vulnerabilities, unsoundness and yanked releases all still block in both
+# tools. Entries below are vulnerability ignores and each needs a justification
+# and a review date — this list is not where an unmaintained crate belongs.
 ignore = [
   # REVIEW BY 2027-03-31: Advisory is on `rsa` via optional `sqlx-mysql`
   # metadata path in `sqlx` 0.8.x. Vellaveto enables only Postgres features

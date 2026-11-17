@@ -72,9 +72,11 @@ jobs:
       #
       # Each lockfile is audited from its own directory rather than with `-f`
       # from the root, because cargo-audit reads `.cargo/audit.toml` from its
-      # working directory only. That keeps the desktop app's two unfixable
-      # tauri-pinned warning ignores scoped to its own lockfile instead of
-      # widening root policy -- see src-tauri/.cargo/audit.toml.
+      # working directory only. That keeps the desktop app's tauri-pinned
+      # unsound ignore scoped to its own lockfile instead of widening root
+      # policy -- see src-tauri/.cargo/audit.toml. It held two entries until the
+      # unmaintained class stopped blocking; the unmaintained one was dropped
+      # then, so that crate is reported rather than suppressed.
       #
       # The loop runs all three and fails if any fail, so one run reports the
       # whole picture instead of stopping at the first bad lockfile.
@@ -83,13 +85,28 @@ jobs:
       # FAILS OPEN. When the crates.io index is unreachable it prints
       # "couldn't check if the package is yanked" and still exits 0, so a pass
       # proves the advisory scan ran, not that the yanked scan did.
+      # The deny set is granular rather than `-D warnings`, which denies every
+      # warning class at once. Vulnerabilities always fail cargo-audit on their
+      # own exit status; `unsound` and `yanked` are denied here on purpose; the
+      # `unmaintained` class is deliberately NOT, because it is reported instead
+      # of blocking -- see the comment on `unmaintained` in deny.toml, and the
+      # per-run summary the dependency monitor prints.
+      #
+      # RUSTSEC-2026-0543 (chrono is unmaintained, no fixed version exists,
+      # direct workspace dependency of ten crates) is what made the difference
+      # matter: with `-D warnings` it failed all three trees here while plain
+      # `cargo audit` passed them, so two gates in this repository disagreed
+      # about whether an abandoned release cadence is a security failure.
+      # `-D warnings` would also start blocking on the next unmaintained crate
+      # anywhere in 650 dependencies, which is not a decision a transitive
+      # author gets to make for this repository.
       - name: Run cargo audit
         run: |
           set -u
           rc=0
           for d in . fuzz packages/vellaveto-desktop/src-tauri; do
             echo "::group::cargo audit ($d)"
-            (cd "$d" && cargo audit -D warnings) || rc=1
+            (cd "$d" && cargo audit -D unsound -D yanked) || rc=1
             echo "::endgroup::"
           done
           exit $rc

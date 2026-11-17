@@ -554,8 +554,9 @@ are hedged the way they are.
   run, so a package that moves into production starts blocking without anyone remembering
   to change a list.
 - **Unmaintained dependencies are reported, not blocked.** `cargo audit` lists them under
-  `warnings`, which do not affect its exit status, and `deny.toml` sets
-  `unmaintained = "none"` so cargo-deny does not duplicate the class. The monitor prints
+  `warnings`, which do not affect its exit status; `deny.toml` sets
+  `unmaintained = "none"` so cargo-deny does not duplicate the class; and
+  `security-audit.yml` denies `unsound` and `yanked` but not `unmaintained`. The monitor prints
   the kinds and counts on every run, so they are visible rather than silent, but they do
   not fail CI. One instance today: `chrono` (RUSTSEC-2026-0543), which has no fixed
   version — 0.4.45 is the latest release — and is on the [Roadmap](#roadmap) to replace.

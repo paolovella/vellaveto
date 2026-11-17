@@ -52,6 +52,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `error[vulnerability]`. The narrowing applies to one class and leaves vulnerabilities
   blocking.
 
+- **`security-audit.yml`: `cargo audit -D warnings` → `-D unsound -D yanked`.** This
+  repository has three Rust advisory gates and they did not agree with each other.
+  `ci.yml` and the dependency monitor run `cargo audit` without a deny set, so warnings
+  never blocked there; `security-audit.yml` ran `-D warnings`, which denies every warning
+  class at once. `chrono` exposed the split by failing that one job on all three trees
+  while the other two gates passed, so whether an abandoned release cadence counted as a
+  security failure depended on which workflow you happened to read.
+
+  The deny set is now granular, which is what cargo-audit's `-D` has always supported:
+  `unsound` and `yanked` still block, `unmaintained` does not, and vulnerabilities block on
+  cargo-audit's own exit status regardless. That matches `deny.toml` exactly rather than
+  approximately. `-D warnings` would also have started blocking on the next unmaintained
+  crate anywhere in 650 dependencies, which is not a decision a transitive author should be
+  able to make for this repository.
+
+  Measured both ways before and after: `-D warnings` fails all three trees on this tree,
+  `-D unsound -D yanked` passes all three, and with the pre-fix lockfile restored it still
+  fails on RUSTSEC-2026-0544 — so the narrower deny set does not let the vulnerability
+  through.
+
+  `packages/vellaveto-desktop/src-tauri/.cargo/audit.toml` loses one of its two entries as
+  a direct consequence. `RUSTSEC-2024-0370` (`proc-macro-error` unmaintained) no longer
+  needs suppressing, and keeping it would have hidden the crate from the monitor's warning
+  summary too — worse than letting it be reported. `RUSTSEC-2024-0429` (`glib` unsound)
+  stays, and was checked to still be load-bearing: removing it makes the tree fail.
+
+  Two stale comments were corrected alongside. `.cargo/audit.toml` still described
+  `deny.toml` as setting `unmaintained = "workspace"` and `cargo audit -D warnings` as
+  flagging transitive unmaintained crates; neither is true any more.
+
 - **The monitor now reports its non-blocking advisory classes instead of dropping them.**
   `cargo audit`'s `warnings` — unmaintained, unsound, yanked — never reached the log,
   because the script only ever spoke about `vulnerabilities`. That was survivable while
