@@ -390,6 +390,62 @@ fi
 # the other way round in October, when it announced "ADVISORY SCAN DID NOT RUN"
 # over 17 genuine vulnerabilities for three weeks. See
 # scripts/tests/dependency-monitor-verdict.sh.
+audit_warning_summary() {
+  # Reads a cargo-audit --json report and prints its NON-BLOCKING warning
+  # classes: one `kind=count [IDS]` group per kind, or `none`, or `UNKNOWN`.
+  #
+  # Why this exists. cargo-audit reports unmaintained, unsound and yanked crates
+  # under `warnings`, which do not affect its exit status, so they never reached
+  # this log at all -- the script only ever spoke about `vulnerabilities`. That
+  # was tolerable while deny.toml also checked the unmaintained class and would
+  # fail on it. It no longer does (see the comment on `unmaintained` there), so
+  # without this line an unmaintained dependency would be silently tolerated by
+  # both tools and appear nowhere.
+  #
+  # Trading a false failure for a blind spot would repeat this script's own
+  # history in the other direction: in October it called 17 real findings
+  # UNKNOWN, and in November it printed four clean lines over a genuine failure.
+  # Reported-and-not-blocking is a different thing from unmentioned.
+  #
+  # UNKNOWN rather than `none` when the report cannot be read, because "no
+  # warnings were found" and "the report could not be examined" must not print
+  # the same way. It does not change the exit status: whether a scan that could
+  # not run fails the job is already decided by audit_status and audit_scan_ran.
+  local file="$1"
+  if [[ ! -s "${file}" ]]; then
+    echo UNKNOWN
+    return 0
+  fi
+  python3 - "${file}" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        doc = json.load(fh)
+    warnings = doc.get("warnings")
+    if warnings is None:
+        print("none")
+        sys.exit(0)
+    if not isinstance(warnings, dict):
+        print("UNKNOWN")
+        sys.exit(0)
+    groups = []
+    for kind in sorted(warnings):
+        entries = warnings.get(kind) or []
+        if not entries:
+            continue
+        ids = []
+        for entry in entries:
+            advisory = entry.get("advisory") or {}
+            ident = advisory.get("id")
+            package = advisory.get("package")
+            ids.append(f"{ident} {package}".strip() if ident else "(unidentified)")
+        groups.append(f"{kind}={len(entries)} [{'; '.join(ids)}]")
+    print("  ".join(groups) if groups else "none")
+except Exception:
+    print("UNKNOWN")
+PY
+}
+
 step_verdict() {
   # $1 = the step's exit status. Only 0 is a pass; everything else is a finding
   # or a failure to conclude, and the step's own message above says which.
@@ -406,6 +462,10 @@ printf '  %-34s %s\n' "2/5 cargo deny"                  "$(step_verdict "${deny_
 printf '  %-34s %s\n' "3/5 cargo vet"                   "$(step_verdict "${vet_status}")"
 printf '  %-34s %s\n' "4/5 duplicate baseline"          "$(step_verdict "${duplicates_status}")"
 printf '  %-34s %s\n' "5/5 cargo metadata"              "$(step_verdict "${metadata_status}")"
+
+# Non-blocking by construction: printed, counted, and never consulted when
+# computing final_status below.
+echo "Advisory warnings (reported, NOT blocking): $(audit_warning_summary "${AUDIT_JSON}")"
 
 failed_steps=()
 [[ ${audit_status} -ne 0 ]] && failed_steps+=("cargo audit")

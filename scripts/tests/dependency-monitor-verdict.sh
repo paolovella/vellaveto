@@ -178,6 +178,102 @@ else
   failures=$((failures + 1))
 fi
 
+# ---------------------------------------------------------------------------
+# audit_warning_summary: the NON-BLOCKING advisory classes.
+#
+# cargo-audit reports unmaintained, unsound and yanked crates under `warnings`,
+# which do not affect its exit status. The monitor never mentioned them, which
+# only became a problem when deny.toml stopped checking the unmaintained class
+# (RUSTSEC-2026-0543, chrono): without this summary such a finding would be
+# tolerated by both tools and visible in neither.
+#
+# Fixtures are the real cargo-audit 0.22.2 --json shape, taken from the run on
+# 2026-11-17: `warnings` is an object keyed by kind, each entry carrying an
+# `advisory` with `id` and `package` alongside `affected`, `kind`, `package` and
+# `versions`.
+# ---------------------------------------------------------------------------
+eval "$(extract audit_warning_summary)"
+
+cat > "${TMP}/audit-warn.json" <<'JSON'
+{
+  "database": { "advisory-count": 800 },
+  "lockfile": { "dependency-count": 650 },
+  "vulnerabilities": { "found": false, "count": 0, "list": [] },
+  "warnings": {
+    "unmaintained": [
+      {
+        "kind": "unmaintained",
+        "package": { "name": "chrono", "version": "0.4.45" },
+        "advisory": {
+          "id": "RUSTSEC-2026-0543",
+          "package": "chrono",
+          "title": "chrono is unmaintained"
+        },
+        "affected": null,
+        "versions": { "patched": [], "unaffected": [] }
+      }
+    ]
+  }
+}
+JSON
+
+cat > "${TMP}/audit-clean.json" <<'JSON'
+{
+  "vulnerabilities": { "found": false, "count": 0, "list": [] },
+  "warnings": {}
+}
+JSON
+
+cat > "${TMP}/audit-multi.json" <<'JSON'
+{
+  "vulnerabilities": { "found": false, "count": 0, "list": [] },
+  "warnings": {
+    "unmaintained": [
+      { "kind": "unmaintained", "advisory": { "id": "RUSTSEC-2026-0543", "package": "chrono" } },
+      { "kind": "unmaintained", "advisory": { "id": "RUSTSEC-2024-0001", "package": "ancient" } }
+    ],
+    "yanked": [
+      { "kind": "yanked", "advisory": { "id": "RUSTSEC-9999-0001", "package": "pulled" } }
+    ]
+  }
+}
+JSON
+
+printf '' > "${TMP}/audit-empty.json"
+printf 'error: could not fetch advisory database
+' > "${TMP}/audit-notjson.json"
+printf '{"warnings": "not-an-object"}
+' > "${TMP}/audit-badshape.json"
+printf '{"vulnerabilities": {"found": false}}
+' > "${TMP}/audit-nowarnkey.json"
+
+check "an unmaintained warning is named with its advisory and crate"   "unmaintained=1 [RUSTSEC-2026-0543 chrono]"   "$(audit_warning_summary "${TMP}/audit-warn.json")"
+check "no warnings reads as none"   "none" "$(audit_warning_summary "${TMP}/audit-clean.json")"
+check "a report with no warnings key at all reads as none"   "none" "$(audit_warning_summary "${TMP}/audit-nowarnkey.json")"
+check "several kinds are grouped per kind, with counts"   "unmaintained=2 [RUSTSEC-2026-0543 chrono; RUSTSEC-2024-0001 ancient]  yanked=1 [RUSTSEC-9999-0001 pulled]"   "$(audit_warning_summary "${TMP}/audit-multi.json")"
+
+# The asymmetry that matters: a report that cannot be read must NOT say "none".
+# "nothing was found" and "nothing was examined" are different claims, and this
+# script has already shipped both of those confusions in production once each.
+check "empty output is UNKNOWN, not none"   "UNKNOWN" "$(audit_warning_summary "${TMP}/audit-empty.json")"
+check "non-JSON output is UNKNOWN, not none"   "UNKNOWN" "$(audit_warning_summary "${TMP}/audit-notjson.json")"
+check "a warnings field of the wrong type is UNKNOWN, not none"   "UNKNOWN" "$(audit_warning_summary "${TMP}/audit-badshape.json")"
+check "a missing file is UNKNOWN, not none"   "UNKNOWN" "$(audit_warning_summary "${TMP}/audit-absent.json")"
+
+# The summary must be reported but must never gate. If it is ever consulted when
+# computing final_status, an unmaintained crate starts blocking again and the
+# policy recorded in deny.toml silently reverses.
+checks=$((checks + 1))
+if grep -qE 'audit_warning_summary' "${MONITOR}" \
+   && ! grep -E 'final_status|failed_steps\+=' "${MONITOR}" | grep -q 'audit_warning_summary'; then
+  echo "  ok    the warning summary is reported and never gates the exit status"
+else
+  echo "  FAIL  audit_warning_summary is missing, or feeds the exit status."
+  echo "        It must be printed and never consulted for final_status: these"
+  echo "        classes are reported precisely because they do not block."
+  failures=$((failures + 1))
+fi
+
 echo
 if [[ "${failures}" -eq 0 ]]; then
   echo "dependency-monitor verdict tests: ${checks} checks, all passed"

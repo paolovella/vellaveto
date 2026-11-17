@@ -9,6 +9,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fixed a heap buffer overflow reachable through `flate2`, and stopped an unmaintained
+  crate from masquerading as one.** Two advisories were published overnight on 2026-11-17
+  and the daily monitor caught both. They are different kinds of thing, and conflating
+  them is what this entry is really about.
+
+  `libz-sys` 1.1.31 → **1.1.33** clears **RUSTSEC-2026-0544**, a heap buffer overflow in
+  the bundled C zlib. It is genuinely in the build rather than a lockfile-only entry:
+  `libz-sys` ← `flate2` ← `vellaveto-audit` and `image`/`png`/`tiff`, present in a plain
+  `cargo tree -i libz-sys` with no `--all-features`. Root and `fuzz` lockfiles only; the
+  desktop tree does not carry it. Lockfile-only: the diff is four lines, a version and a
+  checksum in each tree, and nothing else moved. The `cargo-vet` exemption was re-pointed
+  as in previous sweeps and the count stayed at 649, which is the check that none was
+  added rather than moved. Verified with `cargo check --workspace`, since a patch bump of
+  a `-sys` crate can break linking.
+
+  Neither open Dependabot group PR would have fixed it — both still resolve `libz-sys`
+  1.1.31 — so this needed its own bump rather than waiting on the bump queue.
+
+  **RUSTSEC-2026-0543 (`chrono` is unmaintained) is not a vulnerability and gets no
+  suppression.** The advisory-ignore list in `.cargo/audit.toml` stays at three entries.
+  `cargo audit` already handles this correctly: unmaintained crates land under `warnings`,
+  which do not affect its exit status, so all three trees passed it on this advisory
+  alone. `deny.toml` did not, and that is now fixed.
+
+- **`deny.toml`: `unmaintained = "workspace"` → `"none"`, because the file's own comment
+  had been describing the opposite of its behaviour.** The comment read "Treat
+  unmaintained and unsound crates as workspace-level warnings so they surface in CI but do
+  not hard-block builds (these are informational)". That was untrue — cargo-deny has no
+  warn level for this class, so a workspace-declared unmaintained crate produced
+  `error[unmaintained]` and `advisories FAILED`. `chrono` made the gap visible by blocking
+  the root and `fuzz` trees while `cargo audit` passed them both. The setting now does
+  what the comment always claimed, and `cargo audit` is the single owner of the
+  unmaintained class.
+
+  Not loosened, deliberately: `unsound` stays checked, being a correctness and safety
+  defect rather than an abandoned release cadence, and `yanked` stays `deny`. Nothing
+  about this advisory bears on either.
+
+  Checked rather than assumed that this did not simply mask the real finding: with
+  `unmaintained = "none"` **and** `libz-sys` still at 1.1.31, cargo-deny still fails with
+  `error[vulnerability]`. The narrowing applies to one class and leaves vulnerabilities
+  blocking.
+
+- **`security-audit.yml`: `cargo audit -D warnings` → `-D unsound -D yanked`.** This
+  repository has three Rust advisory gates and they did not agree with each other.
+  `ci.yml` and the dependency monitor run `cargo audit` without a deny set, so warnings
+  never blocked there; `security-audit.yml` ran `-D warnings`, which denies every warning
+  class at once. `chrono` exposed the split by failing that one job on all three trees
+  while the other two gates passed, so whether an abandoned release cadence counted as a
+  security failure depended on which workflow you happened to read.
+
+  The deny set is now granular, which is what cargo-audit's `-D` has always supported:
+  `unsound` and `yanked` still block, `unmaintained` does not, and vulnerabilities block on
+  cargo-audit's own exit status regardless. That matches `deny.toml` exactly rather than
+  approximately. `-D warnings` would also have started blocking on the next unmaintained
+  crate anywhere in 650 dependencies, which is not a decision a transitive author should be
+  able to make for this repository.
+
+  Measured both ways before and after: `-D warnings` fails all three trees on this tree,
+  `-D unsound -D yanked` passes all three, and with the pre-fix lockfile restored it still
+  fails on RUSTSEC-2026-0544 — so the narrower deny set does not let the vulnerability
+  through.
+
+  `packages/vellaveto-desktop/src-tauri/.cargo/audit.toml` loses one of its two entries as
+  a direct consequence. `RUSTSEC-2024-0370` (`proc-macro-error` unmaintained) no longer
+  needs suppressing, and keeping it would have hidden the crate from the monitor's warning
+  summary too — worse than letting it be reported. `RUSTSEC-2024-0429` (`glib` unsound)
+  stays, and was checked to still be load-bearing: removing it makes the tree fail.
+
+  Two stale comments were corrected alongside. `.cargo/audit.toml` still described
+  `deny.toml` as setting `unmaintained = "workspace"` and `cargo audit -D warnings` as
+  flagging transitive unmaintained crates; neither is true any more.
+
+- **The monitor now reports its non-blocking advisory classes instead of dropping them.**
+  `cargo audit`'s `warnings` — unmaintained, unsound, yanked — never reached the log,
+  because the script only ever spoke about `vulnerabilities`. That was survivable while
+  `deny.toml` also checked the unmaintained class and would fail on it; once it stopped,
+  an unmaintained dependency would have been tolerated by both tools and visible in
+  neither. Every run now prints, for example,
+  `Advisory warnings (reported, NOT blocking): unmaintained=1 [RUSTSEC-2026-0543 chrono]`.
+
+  A report that cannot be read prints `UNKNOWN` rather than `none`, because "nothing was
+  found" and "nothing was examined" must not look the same — this script has shipped both
+  of those confusions in production once each, in opposite directions. The summary is
+  printed and never consulted when computing the exit status, and a test asserts that,
+  so the policy recorded in `deny.toml` cannot quietly reverse itself.
+
+  Verdict tests went 18 → 27 checks, with fixtures taken from real `cargo audit` 0.22.2
+  `--json` output. Both new behaviours were mutation-tested: making an unreadable report
+  read as `none`, and making the summary feed the exit status, each fail the suite.
+
 - **Cleared seven advisories in `golang.org/x/net`, and closed the two gaps that hid them.**
   `golang.org/x/net` sat at v0.58.0 in `terraform-provider-vellaveto`, and
   `golang.org/x/net/http2` is genuinely in the compiled graph: `go list -deps ./...` resolves
