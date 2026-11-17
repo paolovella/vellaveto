@@ -10,9 +10,28 @@
 # ---------------------------------------------------------------------------
 [advisories]
 db-urls = ["https://github.com/RustSec/advisory-db"]
-# Treat unmaintained and unsound crates as workspace-level warnings so they
-# surface in CI but do not hard-block builds (these are informational).
-unmaintained = "workspace"
+# Unmaintained crates are NOT checked here, because `cargo audit` already
+# reports them -- as entries under `warnings.unmaintained`, which do not affect
+# its exit status, so they surface without blocking. One owner per advisory
+# class beats two tools disagreeing about one.
+#
+# The previous setting was `unmaintained = "workspace"`, and the comment here
+# claimed it made unmaintained crates "workspace-level warnings so they surface
+# in CI but do not hard-block builds (these are informational)". That was simply
+# untrue: cargo-deny has no warn level for this class, so a workspace-declared
+# unmaintained crate produced `error[unmaintained]` and `advisories FAILED`.
+# RUSTSEC-2026-0543 (chrono is unmaintained, no fixed version exists, direct
+# workspace dependency of ten crates) made the difference visible by blocking
+# the root and fuzz trees on 2026-11-17 while `cargo audit` passed them both.
+# This setting now does what that comment always said it did.
+#
+# What is NOT loosened, deliberately:
+#   * `unsound` stays checked. Unsoundness is a correctness and safety defect,
+#     nearer a vulnerability than to "the author stopped publishing releases".
+#   * `yanked` stays "deny", below. A yanked version was pulled for a reason,
+#     and nothing about the unmaintained class bears on that.
+# Vulnerabilities are unaffected and still block: that is this file's main job.
+unmaintained = "none"
 unsound = "workspace"
 # Yanked crates should block — a yanked version was pulled for a reason.
 yanked = "deny"

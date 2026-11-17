@@ -553,6 +553,13 @@ are hedged the way they are.
   classification comes from each lockfile's own dependency groups and is recomputed every
   run, so a package that moves into production starts blocking without anyone remembering
   to change a list.
+- **Unmaintained dependencies are reported, not blocked.** `cargo audit` lists them under
+  `warnings`, which do not affect its exit status, and `deny.toml` sets
+  `unmaintained = "none"` so cargo-deny does not duplicate the class. The monitor prints
+  the kinds and counts on every run, so they are visible rather than silent, but they do
+  not fail CI. One instance today: `chrono` (RUSTSEC-2026-0543), which has no fixed
+  version — 0.4.45 is the latest release — and is on the [Roadmap](#roadmap) to replace.
+  Vulnerabilities, unsoundness and yanked releases all still block.
 - **The monitoring has had a blind spot on its own failure path.** From 2026-10-13 the
   dependency monitor reported 17 real RustSec advisories as *"advisory posture UNKNOWN"* for
   three weeks: its verdict parser matched plain text, while cargo-deny emits a
@@ -630,7 +637,8 @@ before it can honestly be called enforcement. Until then they are observability.
 |---|---|
 | Guard that `libsqlite3-sys` stays out of the dependency graph | Its advisory suppression is justified only while `sqlx`'s `sqlite` feature is off. Nothing detects that changing, so the justification could silently stop being true. |
 | Advisory scanning for `formal/kani` and `formal/verus` | Their lockfiles are gitignored, so `--locked` scanning cannot run and those trees are unscanned. |
-| Security gates on push | They run on schedule and pull request only, so a regression can sit on `main` for up to a week. |
+| Security gates on push | They run on schedule and pull request only, so a regression can sit on `main` for up to a week. Scheduled runs are also deferred 7–8 hours past their declared cron by GitHub, so the daily gates trail a push by roughly 31 hours rather than 24. |
+| Migrate off `chrono` | RUSTSEC-2026-0543 marks it unmaintained, with no fixed version — 0.4.45 is the latest release. It is a direct workspace dependency of ten crates plus transitive via `sqlx-core`, so replacing it with `time` or `jiff` is a real refactor. Reported as a non-blocking warning meanwhile. |
 | Count drift guards for the remaining docs | `docs/FORMAL_SCOPE.md` and `docs/SECURITY_REVIEW.md` still restate totals by hand; only the README's generated block is CI-enforced. |
 
 ### Product phases
