@@ -44,7 +44,7 @@ unicode-normalization = { workspace = true }
 aho-corasick = "1.1"
 sha2 = { workspace = true }
 hmac = { workspace = true }
-serde_json_canonicalizer = "0.3"
+serde_json_canonicalizer = "0.4"
 hex = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
@@ -67,7 +67,7 @@ vellaveto-discovery = { path = "../vellaveto-discovery", version = "7.0.0", opti
 # lru >= 0.18.2 fixes RUSTSEC-2026-0253 (LruCache::pop is not panic-safe, leaving
 # dangling pointers in the LRU list if a key's Drop panics — CWE-416/415).
 # Reachable only with catch_unwind and a panicking key Drop; our keys are String.
-lru = { version = "0.18.2", optional = true }
+lru = { version = "0.19.0", optional = true }
 async-trait = { workspace = true, optional = true }
 
 # Cloud LLM backends
