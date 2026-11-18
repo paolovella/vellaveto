@@ -523,9 +523,14 @@ are hedged the way they are.
   any packages"*, so the vulnerable C is never compiled or shipped. The two older entries in
   that file are suppressed on the same grounds. If `sqlx`'s `sqlite` feature is ever enabled,
   that justification silently stops holding and **nothing currently detects it**.
-- **Two dependency trees are unscanned.** `formal/kani/Cargo.lock` and
-  `formal/verus/Cargo.lock` are gitignored, so `cargo audit` and `cargo deny` cannot run
-  `--locked` against them.
+- **One npm advisory is suppressed with an expiry.** `GHSA-fc5q-39xc-vjpf`
+  (CVE-2026-112366, high, picomatch ReDoS) is ignored in `site/osv-scanner.toml`. There is
+  no fix to take: 4.0.7 is the latest version picomatch has published and the advisory
+  covers every release. It reaches the site only through `astro build` tooling, and with
+  `output: 'static'` the deployed artifact is plain HTML, CSS and JS. The ignore carries
+  `effectiveUntil`, which is enforced — once the date passes the finding is reported again
+  and the gate fails — so unlike an open-ended suppression it cannot outlive its reasoning
+  unnoticed.
 - **Dependabot cannot land a Rust bump unaided.** Exemptions are exact-version and Dependabot
   never edits `supply-chain/config.toml`, so every cargo update arrives failing the
   supply-chain gate and needs a manual companion edit.
@@ -545,7 +550,8 @@ are hedged the way they are.
   unflagged for up to a week.
 - **Advisories in build and test dependencies are reported, not blocked.**
   `supply-chain-scan` covers the ecosystems cargo does not reach — six npm projects, two Go
-  modules, the pinned Python requirements and the Java SDK — but it fails only on findings
+  modules, the pinned Python requirements, the Java SDK and the GitHub Actions pinned across
+  all workflows — but it fails only on findings
   reachable from a production install. Dev-only findings are listed and counted without
   gating, because they cannot reach a deployed artifact and blocking on eslint and jest
   transitives would stop unrelated work. A compromised build host is still a real
@@ -637,7 +643,6 @@ before it can honestly be called enforcement. Until then they are observability.
 | Gap | Why it matters |
 |---|---|
 | Guard that `libsqlite3-sys` stays out of the dependency graph | Its advisory suppression is justified only while `sqlx`'s `sqlite` feature is off. Nothing detects that changing, so the justification could silently stop being true. |
-| Advisory scanning for `formal/kani` and `formal/verus` | Their lockfiles are gitignored, so `--locked` scanning cannot run and those trees are unscanned. |
 | Security gates on push | They run on schedule and pull request only, so a regression can sit on `main` for up to a week. Scheduled runs are also deferred 7–8 hours past their declared cron by GitHub, so the daily gates trail a push by roughly 31 hours rather than 24. |
 | Migrate off `chrono` | RUSTSEC-2026-0543 marks it unmaintained, with no fixed version — 0.4.45 is the latest release. It is a direct workspace dependency of ten crates plus transitive via `sqlx-core`, so replacing it with `time` or `jiff` is a real refactor. Reported as a non-blocking warning meanwhile. |
 | Count drift guards for the remaining docs | `docs/FORMAL_SCOPE.md` and `docs/SECURITY_REVIEW.md` still restate totals by hand; only the README's generated block is CI-enforced. |

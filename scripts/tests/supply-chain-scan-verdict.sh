@@ -261,6 +261,96 @@ expect_failure_verdict "UNKNOWN blocks"                "UNKNOWN"                
 # build, not sail through it.
 expect_failure_verdict "an unrecognised verdict blocks" "something new" blocking
 
+# ---------------------------------------------------------------------------
+# actions_verdict: the GitHub Actions surface.
+#
+# This surface had no gate at all. Dependabot watched the github-actions
+# ecosystem, but nothing failed on an advisory in it, and
+# pypa/gh-action-pypi-publish sat on 1.14.2 carrying GHSA-5xjx-3w67-w9x9 -- a
+# CVSS 4.0 CRITICAL revoked root CA in the Sigstore trust store used by PyPI
+# Trusted Publishing -- while every gate in the repository read green.
+#
+# Fixtures match the report actions_report writes. The UNKNOWN cases matter most:
+# each one is a way the check could stop working while still printing something
+# that looks like a pass.
+# ---------------------------------------------------------------------------
+eval "$(extract actions_verdict)"
+
+cat > "${TMP}/act-clean.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 29, "conflicts": [],
+  "unversioned": ["dtolnay/rust-toolchain"], "vulnerable": [], "unreviewable": [],
+  "query_ok": true }
+JSON
+cat > "${TMP}/act-vuln.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 29, "conflicts": [],
+  "unversioned": [], "unreviewable": [], "query_ok": true,
+  "vulnerable": [ { "name": "pypa/gh-action-pypi-publish", "version": "1.14.2",
+                    "ids": ["GHSA-5xjx-3w67-w9x9"] } ] }
+JSON
+cat > "${TMP}/act-twovuln.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 29, "conflicts": [],
+  "unversioned": [], "unreviewable": [], "query_ok": true,
+  "vulnerable": [ { "name": "a/b", "version": "1", "ids": ["X-1","X-2"] } ] }
+JSON
+# A stale version comment: the same SHA labelled two different ways. The query
+# would silently use one of them, so the only safe answer is UNKNOWN.
+cat > "${TMP}/act-conflict.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 28, "query_ok": true,
+  "unversioned": [], "vulnerable": [], "unreviewable": [],
+  "conflicts": [ { "name": "actions/checkout", "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+                   "versions": ["7.0.0", "7.0.1"] } ] }
+JSON
+# The OSV request failed. Nothing was assessed, so nothing is clean.
+cat > "${TMP}/act-queryfail.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 29, "conflicts": [],
+  "unversioned": [], "vulnerable": [], "unreviewable": [], "query_ok": false,
+  "error": "URLError: <urlopen error timed out>" }
+JSON
+# Zero refs means the extraction regex stopped matching -- the exact shape of
+# silent failure this whole test file exists to prevent.
+cat > "${TMP}/act-norefs.json" <<'JSON'
+{ "workflow_files": 29, "refs": 0, "distinct_versioned": 0, "conflicts": [],
+  "unversioned": [], "vulnerable": [], "unreviewable": [], "query_ok": true }
+JSON
+# A branch-pinned action for which OSV DOES hold records: the version cannot be
+# matched, so being affected can be neither confirmed nor ruled out.
+cat > "${TMP}/act-unreviewable.json" <<'JSON'
+{ "workflow_files": 29, "refs": 177, "distinct_versioned": 28, "conflicts": [],
+  "unversioned": ["some/branch-pinned"], "vulnerable": [], "query_ok": true,
+  "unreviewable": [ { "name": "some/branch-pinned", "ids": ["GHSA-aaaa-bbbb-cccc"] } ] }
+JSON
+
+expect_eq "a clean actions scan is clean" "$(actions_verdict "${TMP}/act-clean.json")" "clean"
+expect_eq "a vulnerable action is counted" "$(actions_verdict "${TMP}/act-vuln.json")" "1 advisories"
+expect_eq "advisories are counted, not packages" "$(actions_verdict "${TMP}/act-twovuln.json")" "2 advisories"
+expect_eq "a stale version comment is UNKNOWN" "$(actions_verdict "${TMP}/act-conflict.json")" "UNKNOWN"
+expect_eq "a failed OSV query is UNKNOWN, not clean" "$(actions_verdict "${TMP}/act-queryfail.json")" "UNKNOWN"
+expect_eq "zero refs found is UNKNOWN, not clean" "$(actions_verdict "${TMP}/act-norefs.json")" "UNKNOWN"
+expect_eq "a branch-pinned action with records is named" "$(actions_verdict "${TMP}/act-unreviewable.json")" "1 unreviewable"
+expect_eq "an unreadable report is UNKNOWN" "$(actions_verdict "${TMP}/act-absent.json")" "UNKNOWN"
+printf 'error: could not reach OSV\n' > "${TMP}/act-notjson.json"
+expect_eq "a non-JSON report is UNKNOWN" "$(actions_verdict "${TMP}/act-notjson.json")" "UNKNOWN"
+
+expect_failure_verdict "a clean actions scan passes"        "clean"           passing
+expect_failure_verdict "a vulnerable action blocks"         "1 advisories"    blocking
+expect_failure_verdict "an unreviewable action blocks"      "1 unreviewable"  blocking
+expect_failure_verdict "actions UNKNOWN blocks"             "UNKNOWN"         blocking
+
+# The scan must actually call the actions check. If the call is dropped the
+# surface silently stops being covered while every manifest still reports clean.
+checks=$((checks + 1))
+# shellcheck disable=SC2016  # the pattern is literal on purpose
+if grep -qE '^actions_report "\$\{ACTIONS_JSON\}"' "${SCANNER}" \
+   && grep -q 'actions_verdict "\${ACTIONS_JSON}"' "${SCANNER}"; then
+  echo "  ok    the scan invokes the GitHub Actions check"
+else
+  echo "  FAIL  the scan no longer invokes actions_report/actions_verdict."
+  echo "        The github-actions ecosystem would go unscanned while every"
+  echo "        manifest still reported clean -- which is how the CRITICAL in"
+  echo "        pypa/gh-action-pypi-publish went unseen in the first place."
+  failures=$((failures + 1))
+fi
+
 echo "--- drift guards ---"
 checks=$((checks + 1))
 if [[ "${#MANIFESTS[@]}" -eq 11 ]]; then

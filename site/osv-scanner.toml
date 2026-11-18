@@ -1,0 +1,45 @@
+# osv-scanner configuration for the site's lockfile.
+#
+# Scoped to this directory on purpose. osv-scanner reads `osv-scanner.toml` from
+# the directory of the file being scanned, so the entry below applies to
+# site/package-lock.json and nowhere else. The same advisory still blocks if the
+# package ever turns up in something this project ships.
+
+[[IgnoredVulns]]
+id = "GHSA-fc5q-39xc-vjpf"
+# REVIEW BY 2027-05-31. `effectiveUntil` is enforced: once the date passes,
+# osv-scanner reports the finding again and the gate fails. Verified by setting
+# it to a past date and watching the advisory come back, so this entry cannot
+# quietly outlive its justification the way an open-ended ignore would.
+effectiveUntil = 2027-05-31
+reason = """
+picomatch ReDoS via single-branch repeated extglobs (CVE-2026-112366, HIGH).
+
+No fix exists. 4.0.7 is the latest version picomatch has ever published and the
+advisory's range ends at `last_affected: 4.0.7`, so every released version is
+affected -- there is no version to upgrade to. astro 7.4.7, vite 8.3.8 and
+@astrojs/internal-helpers all require ^4.0.7 regardless.
+
+Not reachable in anything this site serves. astro.config.mjs sets
+`output: 'static'`, so astro and vite run during `astro build` and the deployed
+artifact is plain HTML, CSS and JS. picomatch arrives only through that build
+tooling (astro -> vite / anymatch / tinyglobby / fdir) and is not present at
+runtime.
+
+Exploiting it requires supplying a crafted glob such as `+(*)`. The globs
+evaluated during this build come from astro's own configuration and this
+repository's file layout, not from any external input, so there is no untrusted
+path to the vulnerable matcher.
+
+Worth stating plainly: this reads as a PRODUCTION finding rather than dev-only
+because site/package.json declares no devDependencies at all, so every package
+in the tree carries production labelling. The alternative considered was moving
+astro and postcss to devDependencies, which would be semantically defensible for
+a static-site generator and would also have silenced this. It was rejected
+deliberately -- reclassifying a manifest to change a scanner's verdict is a
+worse habit than writing down the reasoning here, and it would have made every
+future finding in this tree non-blocking too.
+
+Clears when picomatch publishes a fixed release; nothing has been published past
+4.0.7 to date.
+"""
