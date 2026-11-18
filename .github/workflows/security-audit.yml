@@ -100,6 +100,36 @@ jobs:
       # `-D warnings` would also start blocking on the next unmaintained crate
       # anywhere in 650 dependencies, which is not a decision a transitive
       # author gets to make for this repository.
+      # formal/kani and formal/verus are cargo trees that NOTHING scanned until
+      # now, and they were a documented gap in README's Roadmap. Their lockfiles
+      # are gitignored (.gitignore:119,121) because both are verification
+      # scratch crates, so a `--locked` scan can never cover them -- which is
+      # why they sat outside every gate rather than failing visibly.
+      #
+      # A separate step from the loop below on purpose: that loop's companion
+      # "Verify lockfiles" step runs `cargo metadata --locked`, which cannot
+      # succeed without a committed lockfile. Here the lockfile is generated
+      # first and then audited.
+      #
+      # Resolving fresh each run means a new advisory in a transitive dependency
+      # shows up here the day it is published, which is the point. Both trees
+      # are small -- 13 and 15 packages -- so this costs seconds.
+      - name: Run cargo audit on the formal verification trees
+        run: |
+          set -u
+          rc=0
+          for d in formal/kani formal/verus; do
+            echo "::group::cargo audit ($d)"
+            if (cd "$d" && cargo generate-lockfile); then
+              (cd "$d" && cargo audit -D unsound -D yanked) || rc=1
+            else
+              echo "::error::could not generate a lockfile for $d, so its advisory posture is UNKNOWN -- that is not a pass."
+              rc=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $rc
+
       - name: Run cargo audit
         run: |
           set -u
