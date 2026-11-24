@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Cleared two advisories published on 2026-11-23, both with patches available.** Three
+  Rust gates went red together on `main` — `dependency-monitor`, `security-audit` and
+  `cargo-deny` — while `supply-chain-scan` stayed green, which localised it to cargo before
+  any log was read.
+
+  `url` 2.5.8 → **2.5.9** clears **RUSTSEC-2026-0592**, a stack overflow in
+  `Url::origin()` on nested `blob:` URLs. It affects all three lockfiles and is in the
+  default build through `reqwest` (reached by `vellaveto-audit` and `mcpsec`) and through
+  `opentelemetry-http` under `vellaveto-server`. Worth noting for anyone grepping: this
+  repository does call `.origin()` in two places, but on an NHI delegation chain rather
+  than on a `Url`, so the vulnerable function has no first-party caller here. The bump is a
+  patch release either way, so reachability did not need settling.
+
+  `cookie` 0.18.1 → **0.18.3** clears **RUSTSEC-2026-0594**, repeated private-cookie
+  nonces in processes that fork. Desktop lockfile only, beneath `tauri` and `wry`.
+
+  `form_urlencoded` 1.2.2 → 1.2.3 comes along as a requirement of `url` 2.5.9. The three
+  lockfile diffs are those crates and nothing else.
+
+  Both `cargo-vet` exemptions were re-pointed and the count stayed at 649. The second one
+  was not anticipated: `cargo vet` reported `form_urlencoded:1.2.3 missing
+  ["safe-to-deploy"]` after only `url` had been re-pointed, because exemptions are pinned
+  to exact versions and a transitive bump invalidates its own entry. The gate caught it
+  before the push, which is the behaviour that pinning is for.
+
+  Verified: `cargo audit` exits 0 on all three trees both plainly and under the gate's
+  `-D unsound -D yanked` set; `cargo deny` reports "advisories ok" on all three;
+  `cargo vet` succeeds with 649 exemptions; `cargo check --workspace` passes, which matters
+  because `url` is compiled rather than lockfile-only; and the supply-chain scan still
+  reports no production advisories across 11 manifests plus the GitHub Actions surface.
+
 - **Fixed a CRITICAL in the PyPI publishing path, and gated the ecosystem that hid it.**
   `pypa/gh-action-pypi-publish` sat at 1.14.2 carrying **GHSA-5xjx-3w67-w9x9** (CVSS 4.0
   CRITICAL, `AV:N/AC:L/PR:N/UI:N`): a revoked `emSign` root CA bundled through `certifi`,
