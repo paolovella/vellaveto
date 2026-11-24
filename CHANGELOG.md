@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Four detections that could only log can now deny.** Denial-of-wallet, jailbreak
+  patterns (MITRE AML.T0054), token/credential leakage and memory-query poisoning (MINJA)
+  each scanned a `tools/call`, logged a warning, wrote an ACIS audit entry, and then
+  forwarded the request. There was no config gate for any of the four, so an operator who
+  wanted the firewall to *stop* a tool call carrying a credential outward had no way to ask
+  for it.
+
+  Each site now reads its gate and, when set, returns a JSON-RPC error instead of
+  forwarding. New gates, all in `[governance]`: `block_on_denial_of_wallet`,
+  `block_on_jailbreak`, `block_on_token_leakage`, `block_on_memory_poisoning`.
+
+  **All four default to `false`**, which is the behaviour-preserving choice here rather than
+  the fail-closed one: these paths have never blocked, so defaulting them on would change
+  what an existing deployment does on upgrade. That is the opposite of the reasoning behind
+  `block_on_injection`, which defaults true because it has always blocked. Both proxies log
+  a startup warning naming any detection that is active but not blocking.
+
+  The specific reason — including how many patterns matched — goes to the audit entry only.
+  The agent receives `Request blocked: security policy violation` and nothing else
+  (R28-MCP-5): an attacker probing which payload tripped a scanner should not be told.
+  Four `assert_denied_opaquely` tests pin that, and were mutation-tested by making one site
+  return its real reason to the caller, which they caught.
+
+  Scope, stated plainly: **stdio only.** These four scanners have exactly one call site each
+  in the whole workspace, in the stdio relay, so the HTTP proxy, WebSocket and gRPC paths do
+  not run them at all — this change widens that asymmetry before narrowing it. Recorded in
+  the README's Roadmap and Limitations rather than left implicit. 21 new tests.
+
 - **Cleared two advisories published on 2026-11-23, both with patches available.** Three
   Rust gates went red together on `main` — `dependency-monitor`, `security-audit` and
   `cargo-deny` — while `supply-chain-scan` stayed green, which localised it to cargo before

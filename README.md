@@ -427,9 +427,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13053 |
+| Rust tests | 13074 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14030 |
+| Total tests tracked by manifest | 14051 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -539,11 +539,19 @@ are hedged the way they are.
 
 - **Most detection layers are advisory, not enforcing.** The enforcement path is the
   policy engine, approval gates, TopologyGuard, and injection/DLP blocking. The ~30
-  modules wired in during the March 2026 activation sweep run in advisory mode: the relay
-  carries explicit `let verdict = Verdict::Allow; // Log-only detection` sites, so those
+  modules wired in during the March 2026 activation sweep run in advisory mode: their
   findings are audited and allowed. Promoting them to enforcement is the largest item on
   the [Roadmap](#roadmap) — each needs a config gate, a denial path, transport parity and
   tests. Read "30+ detection layers" as coverage, not as thirty things that deny.
+- **The four detections that now *can* deny are off by default.** Denial-of-wallet,
+  jailbreak patterns, token/credential leakage and memory-query poisoning had no config
+  gate at all until `governance.block_on_denial_of_wallet`,
+  `governance.block_on_jailbreak`, `governance.block_on_token_leakage` and
+  `governance.block_on_memory_poisoning`. All four default to **false**, because they
+  previously could not block and defaulting them on would change what an existing
+  deployment does on upgrade. So a stock install still detects-and-forwards on all four;
+  an operator has to turn each on. The proxy logs a startup warning naming any detection
+  that is active but not blocking, so the gap is visible rather than silent.
 - **The security gates do not run on push.** `dependency-monitor` is daily,
   `supply-chain-scan` is daily, and `security-audit` and `cargo-deny` are weekly (Mondays);
   all four also run on pull requests. A regression that reaches `main` can therefore go
@@ -616,6 +624,16 @@ than what it observes. Around 30 detection modules currently scan, audit, and al
 needs a config gate, a denial path, parity across stdio/HTTP/WebSocket/gRPC, and tests
 before it can honestly be called enforcement. Until then they are observability. See
 [Limitations](#limitations).
+
+Four are partway: denial-of-wallet, jailbreak patterns, token/credential leakage and
+memory-query poisoning now have a config gate, a denial path and behaviour tests — but
+**on the stdio relay only, and off by default**. What remains for those four is transport
+parity, and it is a wider gap than it sounds: each of those four scanners has exactly one
+call site in the whole workspace, in the stdio relay. The HTTP proxy, WebSocket and gRPC
+paths do not merely fail to block these four — they never run them. (Those paths do have
+their own injection and DLP scanning, which does block, so they are not unprotected in
+general.) Wiring the four scanners into the other three transports is the next step, and
+until it happens turning the gates on buys enforcement on one transport out of four.
 
 ### Independent assurance
 

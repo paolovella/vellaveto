@@ -353,6 +353,44 @@ impl ProxyBridge {
         self
     }
 
+    /// Deny tool calls whose parameters match jailbreak patterns
+    /// (MITRE AML.T0054) instead of only auditing them.
+    ///
+    /// Off by default, which preserves the behaviour this detection had before
+    /// any gate existed. Gates the stdio relay only -- the HTTP, WebSocket and
+    /// gRPC paths do not run this scanner.
+    pub fn with_jailbreak_blocking(mut self, blocking: bool) -> Self {
+        self.jailbreak_blocking = blocking;
+        self
+    }
+
+    /// Deny tool calls whose parameters appear to carry tokens or credentials
+    /// instead of only auditing them.
+    ///
+    /// Off by default. Gates the stdio relay only.
+    pub fn with_token_leakage_blocking(mut self, blocking: bool) -> Self {
+        self.token_leakage_blocking = blocking;
+        self
+    }
+
+    /// Deny tool calls carrying memory-query poisoning indicators (MINJA)
+    /// instead of only auditing them.
+    ///
+    /// Off by default. Gates the stdio relay only.
+    pub fn with_memory_poisoning_blocking(mut self, blocking: bool) -> Self {
+        self.memory_poisoning_blocking = blocking;
+        self
+    }
+
+    /// Deny tool calls that trip denial-of-wallet detection instead of only
+    /// auditing them.
+    ///
+    /// Off by default. Gates the stdio relay only.
+    pub fn with_denial_of_wallet_blocking(mut self, blocking: bool) -> Self {
+        self.denial_of_wallet_blocking = blocking;
+        self
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // R227: Discovery Engine Integration (R24-MCP-1)
     // ═══════════════════════════════════════════════════════════════════
