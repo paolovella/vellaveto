@@ -1466,6 +1466,143 @@ impl McpGrpcService {
             }
         }
 
+        // =========================================================
+        // Governance-gated detections (transport parity with the stdio relay)
+        // =========================================================
+        // Jailbreak patterns (MITRE AML.T0054), token/credential leakage,
+        // memory-query poisoning (MINJA) and denial-of-wallet. Parity with the
+        // HTTP handler; until now all four ran only in the stdio relay.
+        //
+        // NOTE on naming: the memory-poisoning gate above is a DIFFERENT check
+        // -- `memory_tracker` fingerprints response data replayed back in
+        // parameters (OWASP ASI06). This one is the MINJA phrase scanner. Both
+        // legitimately use DecisionOrigin::MemoryPoisoning, so the audit event
+        // names are what distinguish them.
+        {
+            let param_findings =
+                vellaveto_mcp::inspection::tool_param_scan::scan_tool_params(arguments);
+
+            // Stateful: take the finding inside a scoped borrow so the shard
+            // guard is dropped before any `.await`.
+            let dow_findings = {
+                match self.state.sessions.get_mut(session_id) {
+                    Some(mut session) => session.dow_tracker.record_call(tool_name, 0),
+                    None => Vec::new(),
+                }
+            };
+
+            let gate_action = extractor::extract_action(tool_name, arguments);
+            let mut detections: Vec<(bool, DecisionOrigin, &str, String, RuntimeSecurityContext)> =
+                Vec::new();
+
+            if !dow_findings.is_empty() {
+                let blocking = self.state.governance.block_on_denial_of_wallet;
+                detections.push((
+                    blocking,
+                    DecisionOrigin::RateLimiter,
+                    "denial_of_wallet_detected",
+                    format!(
+                        "Tool call blocked: denial-of-wallet pattern detected ({} findings)",
+                        dow_findings.len()
+                    ),
+                    parameter_injection_security_context(arguments, blocking, "denial_of_wallet"),
+                ));
+            }
+            if !param_findings.jailbreak.is_empty() {
+                let blocking = self.state.governance.block_on_jailbreak;
+                detections.push((
+                    blocking,
+                    DecisionOrigin::InjectionScanner,
+                    "jailbreak_patterns_detected",
+                    format!(
+                        "Tool call blocked: jailbreak patterns detected ({} findings)",
+                        param_findings.jailbreak.len()
+                    ),
+                    parameter_injection_security_context(arguments, blocking, "jailbreak"),
+                ));
+            }
+            if !param_findings.token_leakage.is_empty() {
+                let blocking = self.state.governance.block_on_token_leakage;
+                detections.push((
+                    blocking,
+                    DecisionOrigin::Dlp,
+                    "token_leakage_detected",
+                    format!(
+                        "Tool call blocked: token or credential leakage detected ({} findings)",
+                        param_findings.token_leakage.len()
+                    ),
+                    parameter_dlp_security_context(arguments, blocking, "token_leakage"),
+                ));
+            }
+            if !param_findings.memory_poisoning.is_empty() {
+                let blocking = self.state.governance.block_on_memory_poisoning;
+                detections.push((
+                    blocking,
+                    DecisionOrigin::MemoryPoisoning,
+                    "memory_query_poisoning_detected",
+                    format!(
+                        "Tool call blocked: memory-query poisoning indicators detected ({} indicators)",
+                        param_findings.memory_poisoning.len()
+                    ),
+                    memory_poisoning_security_context(arguments, "memory_query_poisoning"),
+                ));
+            }
+
+            for (blocking, origin, event, reason, security_context) in detections {
+                tracing::warn!(
+                    "SECURITY: {} in gRPC tool '{}' (session {}), blocking={}",
+                    event,
+                    tool_name,
+                    session_id,
+                    blocking
+                );
+                let verdict = if blocking {
+                    Verdict::Deny {
+                        reason: reason.clone(),
+                    }
+                } else {
+                    Verdict::Allow
+                };
+                let envelope = build_secondary_acis_envelope_with_security_context(
+                    &gate_action,
+                    &verdict,
+                    origin,
+                    "grpc",
+                    Some(session_id),
+                    Some(&security_context),
+                );
+                if let Err(e) = self
+                    .state
+                    .audit
+                    .log_entry_with_acis(
+                        &gate_action,
+                        &verdict,
+                        json!({
+                            "source": "grpc_proxy",
+                            "session": session_id,
+                            "transport": "grpc",
+                            "event": event,
+                            "tool": tool_name,
+                            "blocked": blocking,
+                        }),
+                        envelope,
+                    )
+                    .await
+                {
+                    tracing::warn!("Failed to audit gRPC {}: {}", event, e);
+                }
+                if blocking {
+                    // SECURITY: generic message only -- the specific reason stays
+                    // in the audit entry above (R28-MCP-5).
+                    return make_proto_error_response(
+                        proto_req,
+                        -32001,
+                        "Request blocked: security policy violation",
+                    );
+                }
+            }
+        }
+
         let mut action = extractor::extract_action(tool_name, arguments);
         let mut matched_approval_id: Option<String> = None;
         let mut matched_approval_registry: Option<&'static str> = None;
