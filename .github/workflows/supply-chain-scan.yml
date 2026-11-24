@@ -20,6 +20,9 @@ on:
       - '**/go.sum'
       - '**/pom.xml'
       - 'sdk/python/requirements*.txt'
+      # Any workflow change can introduce a vulnerable action, so the actions
+      # half of the scan has to see workflow edits -- not just manifest edits.
+      - '.github/workflows/**'
       - 'scripts/run-supply-chain-scan.sh'
       - 'scripts/tests/supply-chain-scan-verdict.sh'
       - '.github/workflows/supply-chain-scan.yml'

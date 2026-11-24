@@ -162,6 +162,158 @@ zero_packages_expected() {
   return 1
 }
 
+actions_report() {
+  # Writes a JSON report of the GitHub Actions advisory check to $1.
+  #
+  # Why this is a query and not an osv-scanner invocation: osv-scanner 2.7.1 has
+  # no extractor for workflow files (verified -- it reports 0 Extract calls and
+  # "No package sources found" on .github/), so the actions are resolved here and
+  # queried against OSV's "GitHub Actions" ecosystem directly.
+  #
+  # Why the ecosystem needed a gate at all: Dependabot watches it, but no gate
+  # scanned it, and pypa/gh-action-pypi-publish sat on 1.14.2 with
+  # GHSA-5xjx-3w67-w9x9 -- a CVSS 4.0 CRITICAL revoked root CA in the Sigstore
+  # trust store used by PyPI Trusted Publishing -- while every gate read green.
+  #
+  # The version problem. Actions are pinned by SHA and OSV matches on versions,
+  # so a version has to come from somewhere. Three sources, in order:
+  #   1. the `# vX.Y.Z` comment on the same line;
+  #   2. failing that, the same SHA's comment elsewhere in the repository --
+  #      release.yml omits the comment on 23 lines whose SHAs are commented in
+  #      other workflows, and they resolve from there;
+  #   3. nothing, for an action pinned to a branch rather than a release
+  #      (dtolnay/rust-toolchain carries `# master` and `# stable`).
+  #
+  # For (3) the action is queried WITHOUT a version, which returns every
+  # advisory record OSV holds for the package. Zero records means there is
+  # provably nothing to miss; one or more means this check cannot rule it out
+  # and says so rather than implying coverage it does not have.
+  #
+  # One SHA carrying two DIFFERENT version comments is a stale comment, which
+  # would silently mis-query. That is a conflict, and a conflict is UNKNOWN.
+  local out="$1"
+  python3 - "${WORKSPACE_ROOT}" "${out}" <<'PY'
+import glob, json, os, re, sys, urllib.request
+
+root, out_path = sys.argv[1], sys.argv[2]
+files = sorted(glob.glob(os.path.join(root, ".github/workflows/*.yml"))) + \
+        sorted(glob.glob(os.path.join(root, ".github/workflows/*.yaml")))
+
+# The name class excludes @ and whitespace only -- a quote character inside a
+# character class inside this heredoc is how the first version of this line
+# failed to parse at all.
+USES = re.compile(r"^\s*(?:-\s*)?uses:\s*([^@\s]+)@([0-9a-f]{40})(.*)$")
+SEMVER = re.compile(r"#\s*v?([0-9][0-9.]*)")
+
+refs, sha_versions = [], {}
+for path in files:
+    rel = os.path.relpath(path, root)
+    try:
+        lines = open(path).read().splitlines()
+    except Exception:
+        refs.append({"unreadable": rel})
+        continue
+    for num, line in enumerate(lines, 1):
+        m = USES.match(line)
+        if not m:
+            continue
+        name = m.group(1).strip("'" + '"')
+        sha, rest = m.group(2), m.group(3)
+        vm = SEMVER.search(rest)
+        version = vm.group(1) if vm else None
+        if version:
+            sha_versions.setdefault((name, sha), set()).add(version)
+        refs.append({"name": name, "sha": sha, "version": version,
+                     "source": f"{rel}:{num}"})
+
+# A SHA claiming two versions means at least one comment is stale.
+conflicts = [{"name": n, "sha": s, "versions": sorted(v)}
+             for (n, s), v in sha_versions.items() if len(v) > 1]
+
+# Resolve the uncommented lines from the same SHA seen elsewhere.
+for r in refs:
+    if r.get("version") or "name" not in r:
+        continue
+    seen = sha_versions.get((r["name"], r["sha"]))
+    if seen and len(seen) == 1:
+        r["version"] = next(iter(seen))
+        r["version_from"] = "same sha elsewhere"
+
+versioned = sorted({(r["name"], r["version"]) for r in refs
+                    if r.get("name") and r.get("version")})
+unversioned = sorted({r["name"] for r in refs
+                      if r.get("name") and not r.get("version")})
+
+report = {"workflow_files": len(files), "refs": len(refs),
+          "distinct_versioned": len(versioned), "conflicts": conflicts,
+          "unversioned": unversioned, "vulnerable": [], "unreviewable": [],
+          "query_ok": False}
+
+def post(url, body):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"})
+    return json.load(urllib.request.urlopen(req, timeout=120))
+
+try:
+    if versioned:
+        body = {"queries": [{"package": {"ecosystem": "GitHub Actions", "name": n},
+                             "version": v} for n, v in versioned]}
+        res = post("https://api.osv.dev/v1/querybatch", body)
+        for (n, v), r in zip(versioned, res.get("results", [])):
+            ids = [x["id"] for x in (r.get("vulns") or [])]
+            if ids:
+                report["vulnerable"].append({"name": n, "version": v, "ids": ids})
+    # Branch-pinned actions: no version to match, so ask whether OSV holds any
+    # record for the package at all.
+    for n in unversioned:
+        r = post("https://api.osv.dev/v1/query",
+                 {"package": {"ecosystem": "GitHub Actions", "name": n}})
+        ids = [x["id"] for x in (r.get("vulns") or [])]
+        if ids:
+            report["unreviewable"].append({"name": n, "ids": ids})
+    report["query_ok"] = True
+except Exception as exc:
+    report["error"] = f"{type(exc).__name__}: {exc}"
+
+with open(out_path, "w") as fh:
+    json.dump(report, fh, indent=1)
+PY
+}
+
+actions_verdict() {
+  # $1 = the JSON report actions_report wrote.
+  # Prints exactly one of:
+  #   clean | N advisories | N unreviewable | UNKNOWN
+  #
+  # UNKNOWN covers every case where the check did not reach a conclusion: an
+  # unreadable report, a failed OSV query, no actions found at all (which would
+  # mean the extraction regex stopped matching), or a stale version comment.
+  # None of those is a pass.
+  local file="$1" n
+  if [[ ! -s "${file}" ]]; then
+    echo UNKNOWN
+    return 0
+  fi
+  n="$(python3 - "${file}" <<'PY'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    if not d.get("query_ok") or d.get("conflicts") or not d.get("refs"):
+        print("UNKNOWN")
+    elif d.get("vulnerable"):
+        print(f"{sum(len(v['ids']) for v in d['vulnerable'])} advisories")
+    elif d.get("unreviewable"):
+        print(f"{len(d['unreviewable'])} unreviewable")
+    else:
+        print("clean")
+except Exception:
+    print("UNKNOWN")
+PY
+)"
+  echo "${n}"
+}
+
 manifest_verdict() {
   # $1 = manifest path, $2 = osv-scanner JSON output file, $3 = its exit status.
   # Prints exactly one of: clean | N advisories | no packages | UNKNOWN
@@ -218,6 +370,9 @@ verdict_is_failure() {
   case "$1" in
     clean | "no packages") return 1 ;;
     *"(dev-only)") return 1 ;;
+    # `N unreviewable` blocks: it means an action is pinned to a branch AND OSV
+    # holds advisory records for it, so this check cannot establish whether the
+    # pinned commit is affected. Not knowing is not the same as being clean.
     *) return 0 ;;
   esac
 }
@@ -335,8 +490,58 @@ PY
   fi
 done
 
+# --- GitHub Actions ----------------------------------------------------------
+# A separate surface from the lockfiles above, and the one that was missing
+# entirely: Dependabot watches the github-actions ecosystem but nothing failed
+# on an advisory in it.
 echo | tee -a "${SUMMARY_TXT}"
-echo "Verdict per manifest (not merely whether each scan ran):" | tee -a "${SUMMARY_TXT}"
+ACTIONS_JSON="${OUTPUT_DIR}/github-actions-${TIMESTAMP}.json"
+actions_report "${ACTIONS_JSON}"
+actions_v="$(actions_verdict "${ACTIONS_JSON}")"
+actions_counts="$(python3 - "${ACTIONS_JSON}" <<'AWC'
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+    print(f"{d.get('refs','?')} refs in {d.get('workflow_files','?')} workflows, "
+          f"{d.get('distinct_versioned','?')} distinct versions queried, "
+          f"{len(d.get('unversioned') or [])} branch-pinned")
+except Exception:
+    print("counts unavailable")
+AWC
+)"
+printf '%-48s %-16s (%s)\n' ".github/workflows (actions)" "${actions_v}" "${actions_counts}" \
+  | tee -a "${SUMMARY_TXT}"
+python3 - "${ACTIONS_JSON}" <<'ADET' | tee -a "${SUMMARY_TXT}"
+import json, sys
+try:
+    with open(sys.argv[1]) as fh:
+        d = json.load(fh)
+except Exception:
+    sys.exit(0)
+for c in d.get("conflicts") or []:
+    print(f"    [stale comment] {c['name']}@{c['sha'][:12]} is labelled "
+          f"{', '.join(c['versions'])} in different workflows -- at least one is wrong")
+for v in d.get("vulnerable") or []:
+    print(f"    [prod] {v['name']}@{v['version']}  {', '.join(v['ids'])}")
+for u in d.get("unreviewable") or []:
+    print(f"    [unreviewable] {u['name']} is branch-pinned and OSV holds "
+          f"{len(u['ids'])} record(s): {', '.join(u['ids'][:4])}")
+if d.get("error"):
+    print(f"    OSV query failed: {d['error']}")
+for n in d.get("unversioned") or []:
+    print(f"    [branch-pinned] {n}: no version to match; OSV holds no records for it")
+ADET
+if [[ "${actions_v}" == UNKNOWN ]]; then
+  unknowns=$((unknowns + 1))
+  failures=$((failures + 1))
+elif verdict_is_failure "${actions_v}"; then
+  failures=$((failures + 1))
+fi
+VERDICTS+=(".github/workflows (actions)|${actions_v}|${actions_counts}")
+
+echo | tee -a "${SUMMARY_TXT}"
+echo "Verdict per surface (not merely whether each scan ran):" | tee -a "${SUMMARY_TXT}"
 for entry in "${VERDICTS[@]}"; do
   printf '  %-48s %s\n' "${entry%%|*}" "$(echo "${entry}" | cut -d'|' -f2)" \
     | tee -a "${SUMMARY_TXT}"
@@ -352,9 +557,9 @@ if [[ "${dev_only}" -gt 0 ]]; then
     | tee -a "${SUMMARY_TXT}"
 fi
 if [[ "${failures}" -gt 0 ]]; then
-  echo "supply-chain scan: FAILED (${failures} of ${#MANIFESTS[@]} manifests)" | tee -a "${SUMMARY_TXT}" >&2
+  echo "supply-chain scan: FAILED (${failures} failing of ${#MANIFESTS[@]} manifests + 1 actions surface)" | tee -a "${SUMMARY_TXT}" >&2
   echo "Summary written to ${SUMMARY_TXT}." | tee -a "${SUMMARY_TXT}"
   exit 1
 fi
-echo "supply-chain scan: no production advisories (${#MANIFESTS[@]} manifests, all reached a verdict)" | tee -a "${SUMMARY_TXT}"
+echo "supply-chain scan: no production advisories (${#MANIFESTS[@]} manifests + GitHub Actions, all reached a verdict)" | tee -a "${SUMMARY_TXT}"
 echo "Summary written to ${SUMMARY_TXT}." | tee -a "${SUMMARY_TXT}"

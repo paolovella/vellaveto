@@ -9,6 +9,116 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Cleared two advisories published on 2026-11-23, both with patches available.** Three
+  Rust gates went red together on `main` — `dependency-monitor`, `security-audit` and
+  `cargo-deny` — while `supply-chain-scan` stayed green, which localised it to cargo before
+  any log was read.
+
+  `url` 2.5.8 → **2.5.9** clears **RUSTSEC-2026-0592**, a stack overflow in
+  `Url::origin()` on nested `blob:` URLs. It affects all three lockfiles and is in the
+  default build through `reqwest` (reached by `vellaveto-audit` and `mcpsec`) and through
+  `opentelemetry-http` under `vellaveto-server`. Worth noting for anyone grepping: this
+  repository does call `.origin()` in two places, but on an NHI delegation chain rather
+  than on a `Url`, so the vulnerable function has no first-party caller here. The bump is a
+  patch release either way, so reachability did not need settling.
+
+  `cookie` 0.18.1 → **0.18.3** clears **RUSTSEC-2026-0594**, repeated private-cookie
+  nonces in processes that fork. Desktop lockfile only, beneath `tauri` and `wry`.
+
+  `form_urlencoded` 1.2.2 → 1.2.3 comes along as a requirement of `url` 2.5.9. The three
+  lockfile diffs are those crates and nothing else.
+
+  Both `cargo-vet` exemptions were re-pointed and the count stayed at 649. The second one
+  was not anticipated: `cargo vet` reported `form_urlencoded:1.2.3 missing
+  ["safe-to-deploy"]` after only `url` had been re-pointed, because exemptions are pinned
+  to exact versions and a transitive bump invalidates its own entry. The gate caught it
+  before the push, which is the behaviour that pinning is for.
+
+  Verified: `cargo audit` exits 0 on all three trees both plainly and under the gate's
+  `-D unsound -D yanked` set; `cargo deny` reports "advisories ok" on all three;
+  `cargo vet` succeeds with 649 exemptions; `cargo check --workspace` passes, which matters
+  because `url` is compiled rather than lockfile-only; and the supply-chain scan still
+  reports no production advisories across 11 manifests plus the GitHub Actions surface.
+
+- **Fixed a CRITICAL in the PyPI publishing path, and gated the ecosystem that hid it.**
+  `pypa/gh-action-pypi-publish` sat at 1.14.2 carrying **GHSA-5xjx-3w67-w9x9** (CVSS 4.0
+  CRITICAL, `AV:N/AC:L/PR:N/UI:N`): a revoked `emSign` root CA bundled through `certifi`,
+  inside the Sigstore trust store that PyPI Trusted Publishing and Digital Attestations
+  rely on. It is used in `publish-pypi.yml` and `release.yml`, both with `id-token: write`.
+  Bumped to `7245906fb61fa33a13554f9d5fb856fe61758086` (v1.14.3), the fixed commit named by
+  the advisory itself. Verified against OSV rather than the version string: 1.14.2 returns
+  that advisory, 1.14.3 returns nothing — which also clears the action's second advisory
+  (GHSA-vxmw-7h4f-hqxh, low, expression injection, fixed back in 1.13.0).
+
+  **Why it was invisible.** Dependabot watches the `github-actions` ecosystem, but no gate
+  scanned it, so every advisory check in this repository read green while a critical
+  advisory sat in the release path. `scripts/run-supply-chain-scan.sh` now resolves every
+  `uses:` reference across all 29 workflows — 177 references, 29 distinct versions — and
+  queries OSV's GitHub Actions ecosystem. Proven to catch the thing it was built for:
+  reinstating the vulnerable SHA makes it report `1 advisories` and block.
+
+  Three details that only measurement would have produced. Versions come from the
+  `# vX.Y.Z` comment, falling back to the same SHA's comment elsewhere in the repository,
+  because `release.yml` omits the comment on 23 lines whose SHAs are labelled in other
+  workflows — without that fallback the gate would have failed closed on 48 lines on its
+  first run. A SHA labelled with two *different* versions is a stale comment and reports
+  UNKNOWN, which catches the drift that would otherwise make the query silently wrong.
+  And `dtolnay/rust-toolchain` is pinned to a branch (`# master`, `# stable`) with no
+  version to match, so it is queried without one, which returns every record OSV holds for
+  the package: zero, so there is provably nothing to miss. Should a branch-pinned action
+  ever have records, the verdict becomes `N unreviewable` and blocks, because not knowing
+  is not the same as being clean.
+
+- **`formal/kani` and `formal/verus` are no longer unscanned**, closing a gap this project
+  had written down rather than fixed. Their lockfiles are gitignored, so a `--locked` scan
+  could never reach them; `security-audit.yml` now generates a lockfile and audits each.
+  A separate step from the existing loop on purpose, because that loop's companion step
+  runs `cargo metadata --locked`, which cannot succeed without a committed lockfile. Both
+  are clean today — 13 and 15 packages — and resolving fresh each run means a new advisory
+  in either shows up the day it is published.
+
+- **A new high-severity npm advisory, suppressed with an enforced expiry rather than
+  silently.** The finished actions gate immediately surfaced `GHSA-fc5q-39xc-vjpf`
+  (CVE-2026-112366, high) — picomatch ReDoS via single-branch repeated extglobs. There is
+  no fix: 4.0.7 is the latest version picomatch has ever published and the advisory's range
+  ends at `last_affected: 4.0.7`, while astro, vite and `@astrojs/internal-helpers` all
+  require `^4.0.7`.
+
+  It is dev-only in admin-console, vellaveto-desktop and sdk/typescript, so already
+  non-blocking there. It read as *production* in `site` for a reason worth recording:
+  `site/package.json` declares no devDependencies at all, so every package in that tree
+  carries production labelling even though `output: 'static'` means astro and vite run only
+  during the build and the deployed artifact is plain HTML, CSS and JS.
+
+  `site/osv-scanner.toml` now ignores it, scoped to that directory so the same advisory
+  still blocks anywhere else, with `effectiveUntil = 2027-05-31`. That date is enforced,
+  not decorative: an expired value makes osv-scanner report the finding again and the gate
+  fail, verified by setting one. The rejected alternative is recorded in the file —
+  reclassifying astro and postcss as devDependencies would also have silenced it and is
+  arguably correct for a static-site generator, but reclassifying a manifest to change a
+  scanner's verdict is a worse habit than writing down the reasoning, and it would have
+  made every future finding in that tree non-blocking too.
+
+- **A licence rule was holding back a critical security fix.** #550 already carried the
+  pypi-publish fix but failed `Dependency Review`, which reported *"did not detect any
+  vulnerable packages with severity level moderate or higher"* and then failed anyway: the
+  `deny-licenses` list forbids LGPL-3.0 and `Swatinem/rust-cache` is LGPL-3.0. That action
+  is already used in 11 workflows on `main`, and the check inspects only dependencies a
+  diff *adds*, so bumping its pin re-presents it as new and trips the rule — blocking the
+  entire GitHub Actions bump stream.
+
+  `pkg:githubactions/Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0` is now
+  in `allow-dependencies-licenses`, following the same pattern and reasoning the file
+  already applies to `r-efi` and `@img/sharp-libvips-*`: a GitHub Action is build tooling
+  that runs on the runner and never links into anything this project distributes, so it
+  does not affect Vellaveto's own licensing the way an LGPL library compiled into a binary
+  would. The deny-list keeps doing that job for shipped code. Pinned by exact SHA, which is
+  how dependency review identifies an action, so a future bump is reviewed again.
+
+  Verdict tests went 33 → 47 checks. Three mutations of the new gate were each confirmed to
+  fail the suite: a failed OSV query reading as clean, the actions check not being invoked
+  at all, and an unreviewable action ceasing to block.
+
 - **Fixed a heap buffer overflow reachable through `flate2`, and stopped an unmaintained
   crate from masquerading as one.** Two advisories were published overnight on 2026-11-17
   and the daily monitor caught both. They are different kinds of thing, and conflating
