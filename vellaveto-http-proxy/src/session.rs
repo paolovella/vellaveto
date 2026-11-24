@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vellaveto_config::ToolManifest;
+use vellaveto_engine::denial_of_wallet::DoWTracker;
 use vellaveto_mcp::memory_tracking::MemoryTracker;
 use vellaveto_mcp::rug_pull::ToolAnnotations;
 use vellaveto_types::{AgentIdentity, ReplayStatus};
@@ -104,6 +105,23 @@ pub struct SessionState {
     /// Records fingerprints of notable strings from tool responses and flags
     /// when those strings appear verbatim in subsequent tool call parameters.
     pub memory_tracker: MemoryTracker,
+    /// Per-session denial-of-wallet tracker (OWASP LLM10): tool-call rate
+    /// spikes, recursive loops, token and session exhaustion.
+    ///
+    /// Stateful, so it lives here rather than on `ProxyState`: the WebSocket
+    /// handler receives `ProxyState` cloned by value, so a tracker placed there
+    /// would silently restart on every connection. Reached from the HTTP,
+    /// WebSocket and gRPC tool-call paths via `sessions.get_mut()`, which is the
+    /// same route `memory_tracker` above already takes.
+    ///
+    /// NOTE (bypass, accepted and recorded rather than silently left): session
+    /// eviction drops this tracker, so a caller who can force eviction -- by
+    /// idling past the timeout, or by pushing the store to its capacity limit --
+    /// resets their own rate window. `flagged_tools` has the same exposure and
+    /// handles it by also consulting a global registry (R240-PROXY-1); doing
+    /// the same here needs a global, tenant-scoped rate store and is deliberately
+    /// out of scope for this change.
+    pub dow_tracker: DoWTracker,
     /// Number of elicitation requests processed in this session.
     /// Used for per-session rate limiting of `elicitation/create` requests.
     pub elicitation_count: u32,
@@ -245,6 +263,9 @@ impl SessionState {
             call_counts: HashMap::new(),
             action_history: VecDeque::new(),
             memory_tracker: MemoryTracker::new(),
+            // Same thresholds the stdio relay uses (relay.rs RelayState::new):
+            // 120 calls/minute, 10M tokens/session, 1 hour.
+            dow_tracker: DoWTracker::new(120, 10_000_000, 3_600_000),
             elicitation_count: 0,
             sampling_count: 0,
             verified_request_nonces: HashSet::new(),

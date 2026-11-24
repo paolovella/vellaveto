@@ -51,6 +51,11 @@ pub enum DoWType {
 }
 
 /// Tracks resource consumption patterns per session.
+///
+/// `Debug` is derived rather than hand-written: the fields are timestamps,
+/// counters and tool names, none of which are secrets. The project requires a
+/// redacting `Debug` only for types carrying keys, tokens or signatures.
+#[derive(Debug)]
 pub struct DoWTracker {
     /// Tool call timestamps (ms).
     call_timestamps: Vec<u64>,

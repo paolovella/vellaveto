@@ -188,6 +188,15 @@ pub struct ProxyState {
     pub known_tools: std::collections::HashSet<String>,
     /// Elicitation interception configuration (MCP 2025-06-18).
     /// Controls whether `elicitation/create` requests are allowed or blocked.
+    /// Governance gates, including the four `block_on_*` denial gates for
+    /// denial-of-wallet, jailbreak, token-leakage and memory-query-poisoning
+    /// detection.
+    ///
+    /// Carried as the whole config section rather than as separate booleans:
+    /// `ProxyState` has no `Default` and is built literally at 33 sites, so one
+    /// field is 33 edits where four booleans would be 132. Follows the existing
+    /// whole-section clones `elicitation_config` and `sampling_config`.
+    pub governance: vellaveto_config::GovernanceConfig,
     pub elicitation_config: vellaveto_config::ElicitationConfig,
     /// Sampling request policy configuration.
     /// Controls whether `sampling/createMessage` requests are allowed or blocked.

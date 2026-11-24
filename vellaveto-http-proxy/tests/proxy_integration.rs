@@ -690,6 +690,7 @@ fn build_test_state(upstream_url: &str, tmp: &TempDir) -> ProxyState {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -2885,6 +2886,7 @@ async fn rug_pull_tool_addition_blocks_tool_call() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -3309,6 +3311,7 @@ async fn trace_resource_read_denied_includes_trace() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -3428,6 +3431,7 @@ async fn trace_constraint_details_visible() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -3895,6 +3899,7 @@ fn build_oauth_test_state_full(params: OAuthTestParams<'_>) -> ProxyState {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -5062,6 +5067,7 @@ fn build_api_key_test_state(
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -5589,6 +5595,7 @@ fn build_test_state_deny_tasks(upstream_url: &str, tmp: &TempDir) -> ProxyState 
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -5746,6 +5753,7 @@ async fn task_get_allowed_when_no_deny_policy() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -5854,6 +5862,7 @@ async fn task_request_fail_closed_no_matching_policy() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -5961,6 +5970,7 @@ async fn task_request_dlp_blocks_secret_in_task_id() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -6074,6 +6084,7 @@ async fn task_request_clean_params_not_dlp_blocked() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -6185,6 +6196,7 @@ async fn task_request_dlp_blocks_github_token_in_params() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -6300,6 +6312,7 @@ async fn extension_method_fail_closed_no_matching_policy() {
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -6635,6 +6648,7 @@ fn build_chain_depth_test_state(upstream_url: &str, tmp: &TempDir, max_depth: us
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,
@@ -7208,6 +7222,7 @@ fn build_priv_escalation_test_state(upstream_url: &str, tmp: &TempDir) -> ProxyS
         detached_signature_freshness:
             vellaveto_http_proxy::proxy::DetachedSignatureFreshnessConfig::default(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: Default::default(),
         elicitation_config: vellaveto_config::ElicitationConfig::default(),
         sampling_config: vellaveto_config::SamplingConfig::default(),
         tool_registry: None,

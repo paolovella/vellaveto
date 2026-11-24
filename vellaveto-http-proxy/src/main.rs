@@ -658,6 +658,32 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Same reasoning as R9-9 above, for the four governance denial gates. These
+    // detections run on the HTTP, WebSocket and gRPC tool-call paths and write
+    // an audit entry either way; with the gate off the request is still
+    // forwarded. All four default to false, so this warning is what keeps
+    // "detected but allowed" visible rather than silent.
+    {
+        let gov = &policy_config.governance;
+        let log_only: Vec<&str> = [
+            (!gov.block_on_jailbreak).then_some("jailbreak"),
+            (!gov.block_on_token_leakage).then_some("token_leakage"),
+            (!gov.block_on_memory_poisoning).then_some("memory_poisoning"),
+            (!gov.block_on_denial_of_wallet).then_some("denial_of_wallet"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !log_only.is_empty() {
+            tracing::warn!(
+                "These detections are ACTIVE but NOT BLOCKING: {}. Findings are \
+                 audited and the request is still forwarded. Set the matching \
+                 [governance] block_on_* option to deny instead.",
+                log_only.join(", ")
+            );
+        }
+    }
+
     // Keep a reference for post-shutdown audit flush (Challenge 15 fix)
     let shutdown_audit = audit.clone();
 
@@ -758,6 +784,7 @@ async fn main() -> Result<()> {
         trusted_request_signers: Arc::new(build_trusted_request_signers(&policy_config)?),
         detached_signature_freshness: (&policy_config.acis).into(),
         known_tools: vellaveto_mcp::rug_pull::build_known_tools(&[]),
+        governance: policy_config.governance.clone(),
         elicitation_config: policy_config.elicitation.clone(),
         sampling_config: policy_config.sampling.clone(),
         tool_registry: None,
