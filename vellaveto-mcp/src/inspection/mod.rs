@@ -25,6 +25,8 @@
 //! - [`dlp`] - Data Loss Prevention / secret scanning
 //! - [`tool_description`] - Tool description injection scanning
 //! - [`multimodal`] - Image/document injection detection (feature-gated)
+//! - [`tool_param_scan`] - Single-pass tool-call parameter scan (jailbreak,
+//!   token leakage, memory-query poisoning)
 //! - [`util`] - Shared utilities (base64 decoding, transformations)
 
 pub mod cross_call_dlp;
@@ -33,6 +35,7 @@ pub mod injection;
 pub mod multimodal;
 pub mod scanner_base;
 pub mod tool_description;
+pub mod tool_param_scan;
 pub mod util;
 pub mod verified_cross_call_dlp;
 pub mod verified_dlp_core;
