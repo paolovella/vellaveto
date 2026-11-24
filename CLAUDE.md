@@ -332,9 +332,16 @@ Test naming: `test_<function>_<scenario>_<expected>`
 
 ## Common Mistakes to Avoid
 
-> **Full orientation protocol:** See `docs/ONBOARDING.md` for the
-> complete 17-trap checklist, transport parity matrix, and verification gates.
-> Every instance MUST read it before modifying code.
+> **Transport parity:** the matrix of which check runs on which transport is
+> `docs/BOUNDARY_INVENTORY.md` Section 7. Read it before adding or moving a
+> check, and update it in the same change.
+>
+> (This block previously pointed at `docs/ONBOARDING.md` for a "17-trap
+> checklist, transport parity matrix, and verification gates" and said every
+> instance MUST read it before modifying code. That file does not exist and is
+> not in the git history — the parity matrix it described lives in
+> BOUNDARY_INVENTORY.md. A mandatory-reading pointer to a missing file is worse
+> than no pointer, since it reads as though the guidance exists somewhere.)
 
 ### General
 1. **Adding dependencies without justification** — every dep is attack surface
@@ -351,7 +358,7 @@ Test naming: `test_<function>_<scenario>_<expected>`
 10. **Using a name-similar constant** — `MAX_ID_LENGTH` vs `MAX_SERVER_ID_LENGTH` are different; verify the doc comment matches your domain
 11. **Adding unbounded collections** — every `Vec`/`HashMap`/`HashSet` needs a `MAX_*` constant enforced in `validate()`
 12. **Fail-open defaults** — defaults and error branches must produce `Deny`, not `Allow`; `unwrap_or(true)` on a lock is a security bypass
-13. **Missing transport parity** — if HTTP handler has a check, WebSocket/gRPC/stdio/SSE must too; see `docs/ONBOARDING.md` Section 4
+13. **Missing transport parity** — if HTTP handler has a check, WebSocket/gRPC/stdio/SSE must too; see `docs/BOUNDARY_INVENTORY.md` Section 7
 14. **Leaking secrets in `Debug`** — custom `Debug` impl required for types with keys, tokens, or signatures
 15. **SDK payload format drift** — all 3 SDKs must match server's serde layout; test after any server format change
 16. **Numeric fields without range validation** — `f64` scores need `[0.0, 1.0]` checks; `NaN`/`Infinity` bypass thresholds

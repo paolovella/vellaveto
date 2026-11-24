@@ -9,6 +9,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Transport parity for the four gated detections, and two DoW defects fixed on the way.**
+  Denial-of-wallet, jailbreak patterns (MITRE AML.T0054), token/credential leakage and
+  memory-query poisoning (MINJA) each had **exactly one call site in the whole workspace**,
+  in the stdio relay. The HTTP proxy, WebSocket and gRPC paths did not merely fail to block
+  them — they never ran them, so an operator who set a gate got enforcement on one transport
+  out of four. All four now run on all four transports. The gates still default to `false`.
+
+  Two defects in `DoWTracker` were fixed first, because wiring attacker-controlled input
+  into them would have made things worse:
+
+  - The rate window **never slid**. A timestamp was pushed only while the vector held fewer
+    than 1000 entries and nothing ever removed one, so after 1000 calls it froze; the
+    retained timestamps then aged out of the 60s window and the in-window count settled
+    permanently at zero. Filling the window and waiting one window out removed rate
+    detection for the life of the session — which already undermined the gate shipped in
+    the previous release.
+  - `record_call` truncated the tool name by **byte index**, which panics when the index
+    splits a codepoint. On stdio the name comes from a local child process; on the other
+    three transports it is attacker-controlled request data, so this was a reachable denial
+    of service. Narrower than it first looked: 256 is divisible by 2 and 4, so 2-byte and
+    4-byte characters land exactly on the bound; `256 % 3 == 1`, so a 3-byte character such
+    as U+20AC is what crashes it.
+
+  Also: `MAX_RECENT_TOOLS` replaces a hand-rolled `>= 20`; a configured threshold at or
+  above the window cap is clamped below it, since such a threshold could never be exceeded
+  and the check would silently never fire.
+
+  The three stateless detectors now share **one pass** over the parameters
+  (`inspection::tool_param_scan`) instead of walking the same JSON three times — there are
+  eight separate copies of `collect_strings` in that crate. It deliberately does **not**
+  adopt `scanner_base`'s traversal despite that module existing to share exactly this: its
+  bounds differ (depth 32 / 10,000 elements against depth 10 / 50,000 bytes), and adopting
+  them would change what the detectors find. `token_leakage`'s `to_lowercase()` also moved
+  out of a per-pattern loop, where it allocated the whole text up to six times per call.
+
+  The denial carries only `Request blocked: security policy violation` on every transport.
+  The specific reason, including the match count, goes to the audit entry (R28-MCP-5). That
+  mattered most on WebSocket, whose existing injection denial names the scanner that fired
+  (`Request blocked: injection detected`) and so was deliberately not copied.
+
+  **What the mutation pass caught**, since this is the part worth reading: of the eleven
+  mutations tried across the five commits, three passed when they should have failed, and
+  each exposed a test that proved nothing.
+
+  - A depth-bound test built `MAX_PARAM_DEPTH + 4` levels of nesting, so mutating the
+    constant moved the test with it. A bound test that reads the bound it is testing is
+    vacuous; it now asserts depth 10 is scanned and depth 11 is not, written literally.
+  - A parity test only used payloads nested past *both* bounds, where both implementations
+    return nothing and agree for the wrong reason. Parity is now also checked at depths
+    11–32, the window where a wrong bound actually differs.
+  - The WebSocket test read only the first frame back. Breaking the `continue` so a blocked
+    call sent the denial **and then forwarded anyway** left the suite green — a client being
+    both denied and served the upstream result looked identical to a clean denial. The test
+    now asserts nothing follows the denial frame, and that mutation's output shows the bug
+    plainly: `Tool read_file executed successfully` arriving after the block.
+
+  Docs corrected rather than left to rot: the parity matrix in
+  `docs/BOUNDARY_INVENTORY.md` had one row reading "Memory poisoning detection Y Y Y Y",
+  which conflated the stateful response-replay tracker with the MINJA query scanner — both
+  report `DecisionOrigin::MemoryPoisoning`, so a reader checking MINJA coverage would have
+  concluded it was already there. Those are now separate rows, with the four gated checks
+  listed and a note that a `Y` means audited, not blocked by default. `CLAUDE.md` pointed
+  twice at `docs/ONBOARDING.md`, including "Every instance MUST read it before modifying
+  code"; that file does not exist and never did in git history, so those now point at the
+  document that actually holds the matrix.
+
+  Also recorded in Limitations, since both are real and neither is fixed: denial-of-wallet
+  state resets when a session is evicted, and neither `fortress.toml` nor
+  `sandworm-hardened.toml` enables any of the four gates.
+
 - **Four detections that could only log can now deny.** Denial-of-wallet, jailbreak
   patterns (MITRE AML.T0054), token/credential leakage and memory-query poisoning (MINJA)
   each scanned a `tools/call`, logged a warning, wrote an ACIS audit entry, and then
