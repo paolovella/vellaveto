@@ -703,6 +703,57 @@ async fn main() -> Result<()> {
         tracing::info!("Tool drift blocking: ENABLED");
     }
 
+    // Denial gates for the four detections that previously had none. Each
+    // scanner already ran and wrote an audit entry; before these gates existed
+    // the request was forwarded regardless, so the proxy would detect a tool
+    // call carrying a credential outward and then pass it on.
+    //
+    // All four default to false, so this block changes nothing unless an
+    // operator opts in. The warning below is what keeps "detected but allowed"
+    // visible instead of silent -- the same reasoning as the R9-9 warning the
+    // HTTP proxy emits for block_on_injection.
+    //
+    // SCOPE: stdio relay only. These scanners are not run on the HTTP,
+    // WebSocket or gRPC paths at all, so setting these does not protect them.
+    {
+        let gov = &policy_config.governance;
+        if gov.block_on_jailbreak {
+            bridge = bridge.with_jailbreak_blocking(true);
+            tracing::info!("Jailbreak blocking: ENABLED");
+        }
+        if gov.block_on_token_leakage {
+            bridge = bridge.with_token_leakage_blocking(true);
+            tracing::info!("Token leakage blocking: ENABLED");
+        }
+        if gov.block_on_memory_poisoning {
+            bridge = bridge.with_memory_poisoning_blocking(true);
+            tracing::info!("Memory poisoning blocking: ENABLED");
+        }
+        if gov.block_on_denial_of_wallet {
+            bridge = bridge.with_denial_of_wallet_blocking(true);
+            tracing::info!("Denial-of-wallet blocking: ENABLED");
+        }
+
+        let log_only: Vec<&str> = [
+            (!gov.block_on_jailbreak).then_some("jailbreak"),
+            (!gov.block_on_token_leakage).then_some("token_leakage"),
+            (!gov.block_on_memory_poisoning).then_some("memory_poisoning"),
+            (!gov.block_on_denial_of_wallet).then_some("denial_of_wallet"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !log_only.is_empty() {
+            tracing::warn!(
+                "These detections are ACTIVE but NOT BLOCKING: {}. Findings are \
+                 audited and the request is still forwarded. Set the matching \
+                 [governance] block_on_* option to deny instead. Note these gates \
+                 cover the stdio relay only.",
+                log_only.join(", ")
+            );
+        }
+    }
+
     // Phase 6: Wire channel separation configs.
     if !policy_config.source_trust.untrusted_tools.is_empty()
         || !policy_config.source_trust.verified_tools.is_empty()

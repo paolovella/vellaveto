@@ -2228,7 +2228,16 @@ impl ProxyBridge {
                     );
                 }
                 let action = extract_action(&tool_name, &arguments);
-                let verdict = Verdict::Allow; // Log-only detection
+                let verdict = if self.denial_of_wallet_blocking {
+                    Verdict::Deny {
+                        reason: format!(
+                            "Tool call blocked: denial-of-wallet pattern detected ({} findings)",
+                            dow.len()
+                        ),
+                    }
+                } else {
+                    Verdict::Allow
+                };
                 let envelope = crate::mediation::build_secondary_acis_envelope(
                     &action,
                     &verdict,
@@ -2246,6 +2255,7 @@ impl ProxyBridge {
                             "event": "denial_of_wallet_detected",
                             "tool": tool_name,
                             "finding_count": dow.len(),
+                            "blocked": self.denial_of_wallet_blocking,
                         }),
                         envelope,
                     )
@@ -2257,6 +2267,23 @@ impl ProxyBridge {
                     {
                         return Ok(());
                     }
+                }
+                if self.denial_of_wallet_blocking {
+                    // SECURITY: generic error to the agent -- do not leak which
+                    // patterns matched or where (R28-MCP-5). The specific reason is
+                    // recorded in the audit entry above, not sent to the caller.
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32001,
+                            "message": "Request blocked: security policy violation",
+                        }
+                    });
+                    write_message(agent_writer, &response)
+                        .await
+                        .map_err(ProxyError::Framing)?;
+                    return Ok(());
                 }
             }
         }
@@ -2272,7 +2299,16 @@ impl ProxyBridge {
                     jb.len()
                 );
                 let action = extract_action(&tool_name, &arguments);
-                let verdict = Verdict::Allow; // Log-only detection
+                let verdict = if self.jailbreak_blocking {
+                    Verdict::Deny {
+                        reason: format!(
+                            "Tool call blocked: jailbreak patterns detected ({} findings)",
+                            jb.len()
+                        ),
+                    }
+                } else {
+                    Verdict::Allow
+                };
                 let envelope = crate::mediation::build_secondary_acis_envelope(
                     &action,
                     &verdict,
@@ -2290,6 +2326,7 @@ impl ProxyBridge {
                             "event": "jailbreak_patterns_detected",
                             "tool": tool_name,
                             "finding_count": jb.len(),
+                            "blocked": self.jailbreak_blocking,
                         }),
                         envelope,
                     )
@@ -2301,6 +2338,23 @@ impl ProxyBridge {
                     {
                         return Ok(());
                     }
+                }
+                if self.jailbreak_blocking {
+                    // SECURITY: generic error to the agent -- do not leak which
+                    // patterns matched or where (R28-MCP-5). The specific reason is
+                    // recorded in the audit entry above, not sent to the caller.
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32001,
+                            "message": "Request blocked: security policy violation",
+                        }
+                    });
+                    write_message(agent_writer, &response)
+                        .await
+                        .map_err(ProxyError::Framing)?;
+                    return Ok(());
                 }
             }
         }
@@ -2316,7 +2370,16 @@ impl ProxyBridge {
                     tl.len()
                 );
                 let action = extract_action(&tool_name, &arguments);
-                let verdict = Verdict::Allow; // Log-only detection
+                let verdict = if self.token_leakage_blocking {
+                    Verdict::Deny {
+                        reason: format!(
+                            "Tool call blocked: token or credential leakage detected ({} findings)",
+                            tl.len()
+                        ),
+                    }
+                } else {
+                    Verdict::Allow
+                };
                 let envelope = crate::mediation::build_secondary_acis_envelope(
                     &action,
                     &verdict,
@@ -2334,6 +2397,7 @@ impl ProxyBridge {
                             "event": "token_leakage_detected",
                             "tool": tool_name,
                             "finding_count": tl.len(),
+                            "blocked": self.token_leakage_blocking,
                         }),
                         envelope,
                     )
@@ -2345,6 +2409,23 @@ impl ProxyBridge {
                     {
                         return Ok(());
                     }
+                }
+                if self.token_leakage_blocking {
+                    // SECURITY: generic error to the agent -- do not leak which
+                    // patterns matched or where (R28-MCP-5). The specific reason is
+                    // recorded in the audit entry above, not sent to the caller.
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32001,
+                            "message": "Request blocked: security policy violation",
+                        }
+                    });
+                    write_message(agent_writer, &response)
+                        .await
+                        .map_err(ProxyError::Framing)?;
+                    return Ok(());
                 }
             }
         }
@@ -2360,7 +2441,16 @@ impl ProxyBridge {
                     mp.len()
                 );
                 let action = extract_action(&tool_name, &arguments);
-                let verdict = Verdict::Allow; // Log-only detection
+                let verdict = if self.memory_poisoning_blocking {
+                    Verdict::Deny {
+                        reason: format!(
+                            "Tool call blocked: memory-query poisoning indicators detected ({} indicators)",
+                            mp.len()
+                        ),
+                    }
+                } else {
+                    Verdict::Allow
+                };
                 let envelope = crate::mediation::build_secondary_acis_envelope(
                     &action,
                     &verdict,
@@ -2378,6 +2468,7 @@ impl ProxyBridge {
                             "event": "memory_query_poisoning_detected",
                             "tool": tool_name,
                             "finding_count": mp.len(),
+                            "blocked": self.memory_poisoning_blocking,
                         }),
                         envelope,
                     )
@@ -2394,6 +2485,23 @@ impl ProxyBridge {
                     {
                         return Ok(());
                     }
+                }
+                if self.memory_poisoning_blocking {
+                    // SECURITY: generic error to the agent -- do not leak which
+                    // patterns matched or where (R28-MCP-5). The specific reason is
+                    // recorded in the audit entry above, not sent to the caller.
+                    let response = json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {
+                            "code": -32001,
+                            "message": "Request blocked: security policy violation",
+                        }
+                    });
+                    write_message(agent_writer, &response)
+                        .await
+                        .map_err(ProxyError::Framing)?;
+                    return Ok(());
                 }
             }
         }

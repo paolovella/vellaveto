@@ -101,6 +101,56 @@ pub struct GovernanceConfig {
     /// Default: false (log-only — relies on schema lineage tracker alerts).
     #[serde(default)]
     pub block_tool_drift: bool,
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Denial gates for detections that previously had none.
+    //
+    // Four scanners in the stdio relay used to scan, log a warning, write an
+    // ACIS audit entry and then forward the request regardless: the firewall
+    // would detect a tool call carrying a credential outward and let it
+    // through. No configuration could change that, because no gate existed.
+    //
+    // Each defaults to false, so upgrading changes nothing. That is a
+    // deliberate choice rather than a fail-closed one: these four had no gate
+    // at all before, so defaulting them to blocking would silently start
+    // denying traffic that every existing deployment currently allows, on
+    // heuristics (rate patterns, jailbreak phrasing) that can false-positive.
+    // Compare `injection.block_on_injection` and `dlp.block_on_finding`, which
+    // default to TRUE: those have always blocked, so fail-closed is the
+    // behaviour-preserving default there and log-only is the
+    // behaviour-preserving default here.
+    //
+    // The shipped proxies log a warning at startup when a detection is enabled
+    // but its gate is off, so the gap is visible rather than silent.
+    //
+    // SCOPE: these gate the stdio relay only. The HTTP proxy, WebSocket and
+    // gRPC paths do not run these four scanners at all -- see the Roadmap in
+    // README.md. Setting one of these does not protect those transports.
+    // ═══════════════════════════════════════════════════════════════════
+    /// When true, tool calls whose parameters match jailbreak patterns
+    /// (MITRE AML.T0054) are denied rather than only audited.
+    /// Default: false (log-only).
+    #[serde(default)]
+    pub block_on_jailbreak: bool,
+
+    /// When true, tool calls whose parameters appear to carry tokens or
+    /// credentials are denied rather than only audited.
+    /// Default: false (log-only).
+    #[serde(default)]
+    pub block_on_token_leakage: bool,
+
+    /// When true, tool calls carrying memory-query poisoning indicators
+    /// (MINJA) are denied rather than only audited.
+    /// Default: false (log-only).
+    #[serde(default)]
+    pub block_on_memory_poisoning: bool,
+
+    /// When true, tool calls that trip denial-of-wallet detection — rate
+    /// spikes, recursive loops, token exhaustion — are denied rather than
+    /// only audited. The thresholds themselves are not yet configurable.
+    /// Default: false (log-only).
+    #[serde(default)]
+    pub block_on_denial_of_wallet: bool,
 }
 
 fn default_discovery_window() -> u64 {
@@ -125,6 +175,12 @@ impl Default for GovernanceConfig {
             auto_revoke_after_secs: 3600,
             emit_agency_audit_events: true,
             block_tool_drift: false,
+            // Log-only by default: see the comment on these fields for why
+            // these four differ from block_on_injection / block_on_finding.
+            block_on_jailbreak: false,
+            block_on_token_leakage: false,
+            block_on_memory_poisoning: false,
+            block_on_denial_of_wallet: false,
         }
     }
 }
@@ -225,5 +281,53 @@ impl GovernanceConfig {
             ));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod denial_gate_tests {
+    use super::GovernanceConfig;
+
+    #[test]
+    fn four_new_denial_gates_default_to_log_only() {
+        // These four detections had no gate at all before, so "off" is the
+        // behaviour-preserving default. Contrast injection.block_on_injection
+        // and dlp.block_on_finding, which default to true because those paths
+        // have always blocked.
+        let g = GovernanceConfig::default();
+        assert!(!g.block_on_jailbreak);
+        assert!(!g.block_on_token_leakage);
+        assert!(!g.block_on_memory_poisoning);
+        assert!(!g.block_on_denial_of_wallet);
+    }
+
+    #[test]
+    fn denial_gates_round_trip_through_toml() {
+        // deny_unknown_fields is set on this struct, so a typo in a field name
+        // is a hard error rather than a silently ignored setting -- which for
+        // a security gate is the difference between "enabled" and "thought it
+        // was enabled".
+        let toml = r#"
+block_on_jailbreak = true
+block_on_token_leakage = true
+block_on_memory_poisoning = true
+block_on_denial_of_wallet = true
+"#;
+        let g: GovernanceConfig = toml::from_str(toml).expect("valid config");
+        assert!(g.block_on_jailbreak);
+        assert!(g.block_on_token_leakage);
+        assert!(g.block_on_memory_poisoning);
+        assert!(g.block_on_denial_of_wallet);
+        // Untouched fields keep their defaults.
+        assert!(!g.block_tool_drift);
+    }
+
+    #[test]
+    fn misspelled_denial_gate_is_rejected() {
+        let toml = "block_on_jailbrake = true\n";
+        assert!(
+            toml::from_str::<GovernanceConfig>(toml).is_err(),
+            "deny_unknown_fields must reject a misspelled gate rather than ignore it"
+        );
     }
 }

@@ -217,6 +217,27 @@ pub struct ProxyBridge {
     /// Default: false (log-only — schema lineage tracker already emits alerts).
     block_tool_drift: bool,
 
+    /// When true, jailbreak patterns in tool call parameters (MITRE AML.T0054)
+    /// deny the call instead of only producing an audit entry.
+    /// Default: false (log-only), which is what this detection did before a
+    /// gate existed. Mirrors `governance.block_on_jailbreak`.
+    jailbreak_blocking: bool,
+
+    /// When true, token/credential leakage in tool call parameters denies the
+    /// call instead of only producing an audit entry.
+    /// Default: false (log-only). Mirrors `governance.block_on_token_leakage`.
+    token_leakage_blocking: bool,
+
+    /// When true, memory-query poisoning indicators (MINJA) deny the call
+    /// instead of only producing an audit entry.
+    /// Default: false (log-only). Mirrors `governance.block_on_memory_poisoning`.
+    memory_poisoning_blocking: bool,
+
+    /// When true, denial-of-wallet findings deny the call instead of only
+    /// producing an audit entry.
+    /// Default: false (log-only). Mirrors `governance.block_on_denial_of_wallet`.
+    denial_of_wallet_blocking: bool,
+
     // ═══════════════════════════════════════════════════════════════════
     // R227: Discovery Engine Integration (R24-MCP-1)
     // ═══════════════════════════════════════════════════════════════════
@@ -410,6 +431,12 @@ impl ProxyBridge {
             strict_tool_name_validation: false,
             // R227: Tool drift blocking (default: disabled)
             block_tool_drift: false,
+            // Denial gates for the four detections that previously had none.
+            // Disabled by default so upgrading changes no behaviour.
+            jailbreak_blocking: false,
+            token_leakage_blocking: false,
+            memory_poisoning_blocking: false,
+            denial_of_wallet_blocking: false,
             // R227: Discovery engine (default: disabled)
             #[cfg(feature = "discovery")]
             discovery_engine: None,
