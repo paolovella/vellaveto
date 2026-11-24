@@ -36,7 +36,8 @@ use vellaveto_mcp::wire::{CanonicalMessageKind, CanonicalRequest};
 use vellaveto_types::acis::DecisionOrigin;
 use vellaveto_types::McpProtocolVersion;
 use vellaveto_types::{
-    has_dangerous_chars, is_unicode_format_char, Action, EvaluationContext, Verdict,
+    has_dangerous_chars, is_unicode_format_char, Action, EvaluationContext, RuntimeSecurityContext,
+    Verdict,
 };
 
 use super::auth::{
@@ -1204,6 +1205,170 @@ pub async fn handle_mcp_post(
                         (StatusCode::OK, Json(error_response)).into_response(),
                         &session_id,
                     );
+                }
+            }
+
+            // =========================================================
+            // Governance-gated detections (transport parity with the stdio relay)
+            // =========================================================
+            // Jailbreak patterns (MITRE AML.T0054), token/credential leakage,
+            // memory-query poisoning (MINJA) and denial-of-wallet. Until now
+            // these ran ONLY in the stdio relay -- the HTTP, WebSocket and gRPC
+            // paths did not merely fail to block them, they never ran them.
+            //
+            // Each gate defaults to false, so this detects and forwards unless
+            // an operator opts in; main.rs warns at startup about any that is
+            // active but not blocking.
+            //
+            // The three stateless detectors share one pass over the parameters
+            // (`scan_tool_params`) rather than walking the JSON three times.
+            {
+                let param_findings =
+                    vellaveto_mcp::inspection::tool_param_scan::scan_tool_params(&arguments);
+
+                // Denial-of-wallet is stateful. Take the finding inside a scoped
+                // borrow and drop the shard guard before any `.await`: the
+                // DEADLOCK-FIX note further down this function exists because
+                // re-entering `state.sessions` under a held guard hangs the proxy.
+                let dow_findings = {
+                    match state.sessions.get_mut(&session_id) {
+                        Some(mut session) => session.dow_tracker.record_call(&tool_name, 0),
+                        None => Vec::new(),
+                    }
+                };
+
+                // Ordered as in the stdio relay so audit streams line up across
+                // transports: DoW, jailbreak, token leakage, memory poisoning.
+                let mut detections: Vec<(
+                    bool,
+                    DecisionOrigin,
+                    &str,
+                    String,
+                    RuntimeSecurityContext,
+                )> = Vec::new();
+
+                if !dow_findings.is_empty() {
+                    let blocking = state.governance.block_on_denial_of_wallet;
+                    detections.push((
+                        blocking,
+                        DecisionOrigin::RateLimiter,
+                        "denial_of_wallet_detected",
+                        format!(
+                            "Tool call blocked: denial-of-wallet pattern detected ({} findings)",
+                            dow_findings.len()
+                        ),
+                        parameter_injection_security_context(
+                            &arguments,
+                            blocking,
+                            "denial_of_wallet",
+                        ),
+                    ));
+                }
+                if !param_findings.jailbreak.is_empty() {
+                    let blocking = state.governance.block_on_jailbreak;
+                    detections.push((
+                        blocking,
+                        DecisionOrigin::InjectionScanner,
+                        "jailbreak_patterns_detected",
+                        format!(
+                            "Tool call blocked: jailbreak patterns detected ({} findings)",
+                            param_findings.jailbreak.len()
+                        ),
+                        parameter_injection_security_context(&arguments, blocking, "jailbreak"),
+                    ));
+                }
+                if !param_findings.token_leakage.is_empty() {
+                    let blocking = state.governance.block_on_token_leakage;
+                    detections.push((
+                        blocking,
+                        DecisionOrigin::Dlp,
+                        "token_leakage_detected",
+                        format!(
+                            "Tool call blocked: token or credential leakage detected ({} findings)",
+                            param_findings.token_leakage.len()
+                        ),
+                        parameter_dlp_security_context(&arguments, blocking, "token_leakage"),
+                    ));
+                }
+                if !param_findings.memory_poisoning.is_empty() {
+                    let blocking = state.governance.block_on_memory_poisoning;
+                    detections.push((
+                        blocking,
+                        DecisionOrigin::MemoryPoisoning,
+                        "memory_query_poisoning_detected",
+                        format!(
+                            "Tool call blocked: memory-query poisoning indicators detected ({} indicators)",
+                            param_findings.memory_poisoning.len()
+                        ),
+                        memory_poisoning_security_context(&arguments, "memory_query_poisoning"),
+                    ));
+                }
+
+                for (blocking, origin, event, reason, security_context) in detections {
+                    tracing::warn!(
+                        "SECURITY: {} in tool '{}' (session {}), blocking={}",
+                        event,
+                        tool_name,
+                        session_id,
+                        blocking
+                    );
+                    let detection_action = extractor::extract_action(&tool_name, &arguments);
+                    let verdict = if blocking {
+                        Verdict::Deny {
+                            reason: reason.clone(),
+                        }
+                    } else {
+                        Verdict::Allow
+                    };
+                    let envelope = build_secondary_acis_envelope_with_security_context(
+                        &detection_action,
+                        &verdict,
+                        origin,
+                        "http",
+                        Some(&session_id),
+                        Some(&security_context),
+                    );
+                    if let Err(e) = state
+                        .audit
+                        .log_entry_with_acis(
+                            &detection_action,
+                            &verdict,
+                            build_audit_context(
+                                &session_id,
+                                json!({
+                                    "event": event,
+                                    "tool": tool_name,
+                                    "blocked": blocking,
+                                }),
+                                &oauth_claims,
+                            ),
+                            envelope,
+                        )
+                        .await
+                    {
+                        tracing::warn!("Failed to audit {}: {}", event, e);
+                        if let Some(deny) = audit_strict_deny(&state, msg.get("id"), &session_id) {
+                            return deny;
+                        }
+                    }
+                    if blocking {
+                        // SECURITY: generic error to the caller -- the specific
+                        // reason, including how many patterns matched, stays in
+                        // the audit entry above (R28-MCP-5). An attacker probing
+                        // which payload tripped a scanner is not told which one.
+                        let error_response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "error": {
+                                "code": -32001,
+                                "message": "Request blocked: security policy violation",
+                            }
+                        });
+                        return attach_session_header(
+                            (StatusCode::OK, Json(error_response)).into_response(),
+                            &session_id,
+                        );
+                    }
                 }
             }
 
