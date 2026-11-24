@@ -976,6 +976,178 @@ async fn relay_client_to_upstream(
                             }
                         }
 
+                        // =========================================================
+                        // Governance-gated detections (parity with HTTP and gRPC)
+                        // =========================================================
+                        // Jailbreak patterns (MITRE AML.T0054), token/credential
+                        // leakage, memory-query poisoning (MINJA) and
+                        // denial-of-wallet. All four ran only in the stdio relay
+                        // before transport parity.
+                        //
+                        // A denial here `continue`s the relay loop rather than
+                        // returning, so the inner loop sets a flag instead of
+                        // using `continue` itself -- that would continue the
+                        // detection loop and fall through to forwarding.
+                        let mut blocked_by_governance_gate = false;
+                        {
+                            let param_findings =
+                                vellaveto_mcp::inspection::tool_param_scan::scan_tool_params(
+                                    arguments,
+                                );
+
+                            // Stateful: scoped borrow, guard dropped before any
+                            // `.await`. `build_ws_runtime_security_context`
+                            // re-enters `state.sessions`, which is why the
+                            // pre-lock/in-lock split exists further down.
+                            let dow_findings = {
+                                match state.sessions.get_mut(&session_id) {
+                                    Some(mut session) => {
+                                        session.dow_tracker.record_call(tool_name, 0)
+                                    }
+                                    None => Vec::new(),
+                                }
+                            };
+
+                            let gate_action = extractor::extract_action(tool_name, arguments);
+                            let mut detections: Vec<(
+                                bool,
+                                DecisionOrigin,
+                                &str,
+                                String,
+                                RuntimeSecurityContext,
+                            )> = Vec::new();
+
+                            if !dow_findings.is_empty() {
+                                let blocking = state.governance.block_on_denial_of_wallet;
+                                detections.push((
+                                    blocking,
+                                    DecisionOrigin::RateLimiter,
+                                    "denial_of_wallet_detected",
+                                    format!(
+                                        "Tool call blocked: denial-of-wallet pattern detected ({} findings)",
+                                        dow_findings.len()
+                                    ),
+                                    super::helpers::parameter_injection_security_context(
+                                        arguments,
+                                        blocking,
+                                        "denial_of_wallet",
+                                    ),
+                                ));
+                            }
+                            if !param_findings.jailbreak.is_empty() {
+                                let blocking = state.governance.block_on_jailbreak;
+                                detections.push((
+                                    blocking,
+                                    DecisionOrigin::InjectionScanner,
+                                    "jailbreak_patterns_detected",
+                                    format!(
+                                        "Tool call blocked: jailbreak patterns detected ({} findings)",
+                                        param_findings.jailbreak.len()
+                                    ),
+                                    super::helpers::parameter_injection_security_context(
+                                        arguments,
+                                        blocking,
+                                        "jailbreak",
+                                    ),
+                                ));
+                            }
+                            if !param_findings.token_leakage.is_empty() {
+                                let blocking = state.governance.block_on_token_leakage;
+                                detections.push((
+                                    blocking,
+                                    DecisionOrigin::Dlp,
+                                    "token_leakage_detected",
+                                    format!(
+                                        "Tool call blocked: token or credential leakage detected ({} findings)",
+                                        param_findings.token_leakage.len()
+                                    ),
+                                    super::helpers::parameter_dlp_security_context(
+                                        arguments,
+                                        blocking,
+                                        "token_leakage",
+                                    ),
+                                ));
+                            }
+                            if !param_findings.memory_poisoning.is_empty() {
+                                let blocking = state.governance.block_on_memory_poisoning;
+                                detections.push((
+                                    blocking,
+                                    DecisionOrigin::MemoryPoisoning,
+                                    "memory_query_poisoning_detected",
+                                    format!(
+                                        "Tool call blocked: memory-query poisoning indicators detected ({} indicators)",
+                                        param_findings.memory_poisoning.len()
+                                    ),
+                                    super::helpers::memory_poisoning_security_context(
+                                        arguments,
+                                        "memory_query_poisoning",
+                                    ),
+                                ));
+                            }
+
+                            for (blocking, origin, event, reason, security_context) in detections {
+                                tracing::warn!(
+                                    session_id = %session_id,
+                                    "SECURITY: {} in WS tool '{}', blocking={}",
+                                    event,
+                                    tool_name,
+                                    blocking
+                                );
+                                let verdict = if blocking {
+                                    Verdict::Deny {
+                                        reason: reason.clone(),
+                                    }
+                                } else {
+                                    Verdict::Allow
+                                };
+                                let envelope = build_secondary_acis_envelope_with_security_context(
+                                    &gate_action,
+                                    &verdict,
+                                    origin,
+                                    "websocket",
+                                    Some(&session_id),
+                                    Some(&security_context),
+                                );
+                                if let Err(e) = state
+                                    .audit
+                                    .log_entry_with_acis(
+                                        &gate_action,
+                                        &verdict,
+                                        json!({
+                                            "source": "ws_proxy",
+                                            "session": session_id,
+                                            "transport": "websocket",
+                                            "event": event,
+                                            "tool": tool_name,
+                                            "blocked": blocking,
+                                        }),
+                                        envelope,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!("Failed to audit WS {}: {}", event, e);
+                                }
+                                if blocking {
+                                    // SECURITY: generic message only. The existing
+                                    // WS injection denial says "Request blocked:
+                                    // injection detected", which names the scanner
+                                    // -- deliberately not copied here (R28-MCP-5).
+                                    let error = make_ws_error_response(
+                                        Some(id),
+                                        -32001,
+                                        "Request blocked: security policy violation",
+                                    );
+                                    let mut sink = client_sink.lock().await;
+                                    let _ = sink.send(Message::Text(error.into())).await;
+                                    blocked_by_governance_gate = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if blocked_by_governance_gate {
+                            continue;
+                        }
+
                         let mut action = extractor::extract_action(tool_name, arguments);
                         let mut matched_approval_id: Option<String> = None;
                         let mut matched_approval_registry: Option<&'static str> = None;
