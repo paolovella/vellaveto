@@ -123,9 +123,11 @@ pub struct GovernanceConfig {
     // The shipped proxies log a warning at startup when a detection is enabled
     // but its gate is off, so the gap is visible rather than silent.
     //
-    // SCOPE: these gate the stdio relay only. The HTTP proxy, WebSocket and
-    // gRPC paths do not run these four scanners at all -- see the Roadmap in
-    // README.md. Setting one of these does not protect those transports.
+    // SCOPE: these gate the stdio relay, the HTTP proxy, WebSocket and gRPC.
+    // When this comment was first written they covered stdio alone, because
+    // each scanner had exactly one call site in the workspace; the other three
+    // transports now run them too, so one setting applies everywhere a tool
+    // call is mediated.
     // ═══════════════════════════════════════════════════════════════════
     /// When true, tool calls whose parameters match jailbreak patterns
     /// (MITRE AML.T0054) are denied rather than only audited.

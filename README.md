@@ -427,9 +427,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13074 |
+| Rust tests | 13097 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14051 |
+| Total tests tracked by manifest | 14074 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -550,8 +550,19 @@ are hedged the way they are.
   `governance.block_on_memory_poisoning`. All four default to **false**, because they
   previously could not block and defaulting them on would change what an existing
   deployment does on upgrade. So a stock install still detects-and-forwards on all four;
-  an operator has to turn each on. The proxy logs a startup warning naming any detection
-  that is active but not blocking, so the gap is visible rather than silent.
+  an operator has to turn each on. Both proxies log a startup warning naming any detection
+  that is active but not blocking, so the gap is visible rather than silent. They do now
+  run on all four transports, so a gate that is turned on applies everywhere.
+- **Denial-of-wallet state resets when a session is evicted.** The tracker is per-session —
+  on `RelayState` for stdio, on `SessionState` for HTTP, WebSocket and gRPC — so a caller
+  who can force eviction, by idling past the session timeout or pushing the store to its
+  capacity limit, resets their own rate window. Rug-pull protection answers the same
+  exposure with a global registry; doing that for rate state needs a global, tenant-scoped
+  store and is not built.
+- **Neither hardening preset enables the four gates.** `fortress.toml` and
+  `sandworm-hardened.toml` leave all four at their default `false`, so choosing the most
+  hardened preset does not turn on the hardening that exists. `block_tool_drift`, the
+  governance gate these follow, is absent from every preset too.
 - **The security gates do not run on push.** `dependency-monitor` is daily,
   `supply-chain-scan` is daily, and `security-audit` and `cargo-deny` are weekly (Mondays);
   all four also run on pull requests. A regression that reaches `main` can therefore go
@@ -625,15 +636,17 @@ needs a config gate, a denial path, parity across stdio/HTTP/WebSocket/gRPC, and
 before it can honestly be called enforcement. Until then they are observability. See
 [Limitations](#limitations).
 
-Four are partway: denial-of-wallet, jailbreak patterns, token/credential leakage and
-memory-query poisoning now have a config gate, a denial path and behaviour tests — but
-**on the stdio relay only, and off by default**. What remains for those four is transport
-parity, and it is a wider gap than it sounds: each of those four scanners has exactly one
-call site in the whole workspace, in the stdio relay. The HTTP proxy, WebSocket and gRPC
-paths do not merely fail to block these four — they never run them. (Those paths do have
-their own injection and DLP scanning, which does block, so they are not unprotected in
-general.) Wiring the four scanners into the other three transports is the next step, and
-until it happens turning the gates on buys enforcement on one transport out of four.
+Four are done: denial-of-wallet, jailbreak patterns, token/credential leakage and
+memory-query poisoning have a config gate, a denial path, behaviour tests, and now run on
+**all four transports** — stdio, HTTP, WebSocket and gRPC. Each of those scanners
+previously had exactly one call site in the whole workspace, so the other three transports
+did not merely fail to block them, they never ran them; turning a gate on bought
+enforcement on one transport out of four. That is closed. They still ship **off by
+default** (see [Limitations](#limitations)), so a stock install detects and forwards; what
+changed is that setting a gate now applies everywhere a tool call is mediated.
+
+The remaining ~26 modules are the rest of this item. Per-transport coverage for every
+check is tracked in [docs/BOUNDARY_INVENTORY.md](docs/BOUNDARY_INVENTORY.md) Section 7.
 
 ### Independent assurance
 

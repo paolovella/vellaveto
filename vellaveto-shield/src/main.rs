@@ -340,8 +340,8 @@ async fn main() -> Result<()> {
     // visible instead of silent -- the same reasoning as the R9-9 warning the
     // HTTP proxy emits for block_on_injection.
     //
-    // SCOPE: stdio relay only. These scanners are not run on the HTTP,
-    // WebSocket or gRPC paths at all, so setting these does not protect them.
+    // SCOPE: these gates now apply on the HTTP, WebSocket and gRPC paths as
+    // well as here. They were stdio-only when first added.
     {
         let gov = &policy_config.governance;
         if gov.block_on_jailbreak {
@@ -374,8 +374,7 @@ async fn main() -> Result<()> {
             tracing::warn!(
                 "These detections are ACTIVE but NOT BLOCKING: {}. Findings are \
                  audited and the request is still forwarded. Set the matching \
-                 [governance] block_on_* option to deny instead. Note these gates \
-                 cover the stdio relay only.",
+                 [governance] block_on_* option to deny instead.",
                 log_only.join(", ")
             );
         }

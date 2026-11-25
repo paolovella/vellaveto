@@ -147,7 +147,11 @@ via `log_entry_with_acis` in the relay.
 |---------|-------|------|----|------|-----|
 | DLP parameter scanning | Y | Y | Y | Y | Y |
 | Injection detection | Y | Y | Y | Y | Y |
-| Memory poisoning detection | Y | Y | Y | Y | — |
+| Memory poisoning — response replay (`memory_tracking`) | Y | Y | Y | Y | — |
+| Memory poisoning — MINJA query scan (`memory_query_poisoning`) | Y | Y | Y | Y | — |
+| Jailbreak patterns (`jailbreak_patterns`) | Y | Y | Y | Y | — |
+| Token/credential leakage (`token_leakage`) | Y | Y | Y | Y | — |
+| Denial-of-wallet (`denial_of_wallet`) | Y | Y | Y | Y | — |
 | Approval gate | Y | Y | Y | Y | Y |
 | ABAC evaluation | Y | Y | Y | Y | Y |
 | Session binding | Y | Y | Y | Y | Y |
@@ -157,6 +161,34 @@ via `log_entry_with_acis` in the relay.
 | Rate limiting | — | Y | Y | Y | Y |
 | Output schema validation | Y | Y | Y | Y | Y |
 | Control char validation | Y | Y | Y | Y | Y |
+
+### Notes on the rows above
+
+**Two different memory-poisoning checks.** The row that used to read simply
+"Memory poisoning detection" conflated them, which is actively misleading: a
+reader checking whether a transport covers MINJA would have concluded it did.
+
+- *Response replay* (`vellaveto-mcp/src/memory_tracking.rs`, OWASP ASI06) is
+  stateful. It fingerprints notable strings from tool responses and flags them
+  when they reappear verbatim in later tool-call parameters.
+- *MINJA query scan* (`vellaveto-mcp/src/memory_query_poisoning.rs`) is
+  stateless pattern matching over parameter text for memory-manipulation
+  phrasing.
+
+Both report `DecisionOrigin::MemoryPoisoning`, so the audit **event name** is
+the only thing that distinguishes them: `memory_poisoning_detected` for the
+former, `memory_query_poisoning_detected` for the latter.
+
+**The last four rows are gated and ship off.** Jailbreak, token leakage, MINJA
+query scan and denial-of-wallet run on all four transports and always write an
+audit entry, but they deny only when the matching `[governance] block_on_*`
+option is set, and all four default to `false`. A `Y` in those rows means the
+check runs and is audited on that transport, not that it blocks by default.
+
+**Denial-of-wallet is per-session and resets on eviction.** It lives on
+`RelayState` for stdio and on `SessionState` for the other three. A caller who
+can force session eviction resets their own rate window; see the field comment
+in `vellaveto-http-proxy/src/session.rs`.
 
 ---
 

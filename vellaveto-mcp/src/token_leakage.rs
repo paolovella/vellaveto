@@ -125,8 +125,14 @@ pub fn scan_for_token_leakage(text: &str) -> Vec<TokenLeakageFinding> {
         "client_secret=",
         "private_key=",
     ];
+    // PERF: lowercase once, not once per pattern. This was inside the loop, so
+    // a payload matching none of the six patterns allocated the whole text six
+    // times over -- up to ~300KB of churn on a 50KB parameter blob. It matters
+    // more now the scanners run on the HTTP/WebSocket/gRPC paths, which carry
+    // far more traffic than the stdio relay against a <5ms P99 budget.
+    let lowered = text.to_lowercase();
     for p in &secret_patterns {
-        if text.to_lowercase().contains(p) {
+        if lowered.contains(p) {
             findings.push(TokenLeakageFinding {
                 token_type: TokenType::GenericSecret,
                 confidence: 70,
