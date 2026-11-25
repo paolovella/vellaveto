@@ -16,7 +16,12 @@ name = "vellaveto-operator"
 path = "src/main.rs"
 
 [dependencies]
-kube = { version = "4.2.0", features = ["runtime", "derive", "client"] }
+# SECURITY: floor raised to 4.2.1 for RUSTSEC-2026-0600 -- the `openssl-tls`
+# connector trusted OpenSSL's default CA store in addition to the configured
+# cluster CA. Not reachable here (no `openssl-tls` feature; the graph resolves
+# to rustls and the lockfile has no openssl/openssl-sys), but the fix is a patch
+# release, so the floor is raised rather than the advisory suppressed.
+kube = { version = "4.2.1", features = ["runtime", "derive", "client"] }
 k8s-openapi = { version = "0.28", features = ["v1_32"] }
 schemars = "1"
 serde = { workspace = true }
