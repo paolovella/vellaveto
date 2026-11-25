@@ -7754,3 +7754,164 @@ async fn http_all_four_gates_default_off() {
         );
     }
 }
+
+// ── The denial-of-wallet eviction bypass, on HTTP ───────────────────────────
+//
+// The per-session tracker dies with its session, so a caller who could force
+// eviction reset their own rate window. The global window is keyed on the
+// authenticated principal instead. Two directions to prove: the HTTP gate
+// POPULATES that window, and it CONSULTS it.
+
+/// Post one tools/call on a session that already carries `principal`.
+async fn post_tool_call_as_principal(
+    state: &ProxyState,
+    principal: &str,
+    tool: &str,
+    arguments: Value,
+) -> Value {
+    let session_id = state.sessions.get_or_create(None);
+    {
+        let mut session = state.sessions.get_mut(&session_id).expect("session");
+        session.oauth_subject = Some(principal.to_string());
+    }
+
+    let msg = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": tool, "arguments": arguments }
+    });
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "content-type",
+        "application/json".parse().expect("content type header"),
+    );
+    headers.insert(
+        super::MCP_PROTOCOL_VERSION_HEADER,
+        "2025-11-25".parse().expect("protocol version header"),
+    );
+    headers.insert(
+        super::MCP_SESSION_ID,
+        session_id.parse().expect("session header"),
+    );
+
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        super::handlers::handle_mcp_post(
+            State(state.clone()),
+            OriginalUri("/mcp".parse().expect("mcp uri")),
+            Query(super::McpQueryParams::default()),
+            None,
+            headers,
+            Bytes::from(serde_json::to_vec(&msg).expect("json body")),
+        ),
+    )
+    .await
+    .expect("handler timeout");
+
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        to_bytes(response.into_body(), usize::MAX),
+    )
+    .await
+    .expect("body timeout")
+    .expect("response body");
+    serde_json::from_slice(&body).unwrap_or(Value::Null)
+}
+
+#[tokio::test]
+async fn http_dow_gate_populates_the_global_window() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = governance_gate_state(Default::default(), tmp.path().join("audit.jsonl"));
+    assert_eq!(state.sessions.global_dow_len(), 0);
+
+    post_tool_call_as_principal(&state, "sub-pop", "read_file", json!({"path": "/tmp/x"})).await;
+
+    assert_eq!(
+        state.sessions.global_dow_len(),
+        1,
+        "the HTTP gate must record the call against the principal's global window"
+    );
+}
+
+#[tokio::test]
+async fn http_dow_gate_denies_a_fresh_session_for_a_spiking_principal() {
+    // This is the bypass. The burst is attributed to the principal, not the
+    // session, so rotating the session must not clear it.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let gov = vellaveto_config::GovernanceConfig {
+        block_on_denial_of_wallet: true,
+        ..Default::default()
+    };
+    let state = governance_gate_state(gov, tmp.path().join("audit.jsonl"));
+
+    // Stand in for an earlier session that already burned through the ceiling.
+    let now = crate::session::now_ms();
+    for _ in 0..=crate::session::DOW_MAX_CALLS_PER_MINUTE {
+        state
+            .sessions
+            .record_global_call("oauth:sub-abuser", now, u32::MAX);
+    }
+
+    // A brand-new session for the same principal.
+    let body =
+        post_tool_call_as_principal(&state, "sub-abuser", "read_file", json!({"path": "/tmp/x"}))
+            .await;
+
+    assert_eq!(
+        body["error"]["message"].as_str(),
+        Some("Request blocked: security policy violation"),
+        "a fresh session must not reset the principal's rate window: {body}"
+    );
+}
+
+#[tokio::test]
+async fn http_dow_gate_does_not_deny_a_different_principal() {
+    // A global throttle that misfires is an outage. One principal's burst must
+    // not spill onto another.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let gov = vellaveto_config::GovernanceConfig {
+        block_on_denial_of_wallet: true,
+        ..Default::default()
+    };
+    let state = governance_gate_state(gov, tmp.path().join("audit.jsonl"));
+
+    let now = crate::session::now_ms();
+    for _ in 0..=crate::session::DOW_MAX_CALLS_PER_MINUTE {
+        state
+            .sessions
+            .record_global_call("oauth:sub-noisy", now, u32::MAX);
+    }
+
+    let body = post_tool_call_as_principal(
+        &state,
+        "sub-innocent",
+        "read_file",
+        json!({"path": "/tmp/x"}),
+    )
+    .await;
+
+    assert_ne!(
+        body["error"]["message"].as_str(),
+        Some("Request blocked: security policy violation"),
+        "an unrelated principal must not be throttled by someone else's burst: {body}"
+    );
+}
+
+#[tokio::test]
+async fn http_dow_gate_leaves_unauthenticated_callers_on_the_session_window() {
+    // The documented limit, pinned so it cannot quietly change: with no
+    // authenticated principal there is nothing that survives session rotation,
+    // so nothing is recorded globally.
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let state = governance_gate_state(Default::default(), tmp.path().join("audit.jsonl"));
+
+    // post_tool_call_for_gate creates a session without a principal.
+    let audit_path = tmp.path().join("audit.jsonl");
+    post_tool_call_for_gate(&state, &audit_path, "read_file", json!({"path": "/tmp/x"})).await;
+
+    assert_eq!(
+        state.sessions.global_dow_len(),
+        0,
+        "an unauthenticated caller has no principal to key on, so nothing is \
+         tracked globally — this is the stated limit of the fix"
+    );
+}

@@ -1484,12 +1484,21 @@ impl McpGrpcService {
 
             // Stateful: take the finding inside a scoped borrow so the shard
             // guard is dropped before any `.await`.
-            let dow_findings = {
+            let (mut dow_findings, dow_principal) = {
                 match self.state.sessions.get_mut(session_id) {
-                    Some(mut session) => session.dow_tracker.record_call(tool_name, 0),
-                    None => Vec::new(),
+                    Some(mut session) => {
+                        let principal = crate::session::authenticated_principal(&session);
+                        (session.dow_tracker.record_call(tool_name, 0), principal)
+                    }
+                    None => (Vec::new(), None),
                 }
             };
+            // Guard dropped before the global lookup, which re-enters sessions.
+            crate::session::merge_global_dow_finding(
+                &self.state.sessions,
+                dow_principal.as_deref(),
+                &mut dow_findings,
+            );
 
             let gate_action = extractor::extract_action(tool_name, arguments);
             let mut detections: Vec<(bool, DecisionOrigin, &str, String, RuntimeSecurityContext)> =

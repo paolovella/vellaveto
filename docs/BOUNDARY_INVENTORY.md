@@ -185,10 +185,13 @@ audit entry, but they deny only when the matching `[governance] block_on_*`
 option is set, and all four default to `false`. A `Y` in those rows means the
 check runs and is audited on that transport, not that it blocks by default.
 
-**Denial-of-wallet is per-session and resets on eviction.** It lives on
-`RelayState` for stdio and on `SessionState` for the other three. A caller who
-can force session eviction resets their own rate window; see the field comment
-in `vellaveto-http-proxy/src/session.rs`.
+**Denial-of-wallet keeps rate state in two places.** A per-session tracker on
+`RelayState` (stdio) or `SessionState` (the other three), plus — on HTTP,
+WebSocket and gRPC — a global window on `SessionStore` keyed on the
+authenticated principal, so the rate ceiling survives session eviction. An
+unauthenticated caller has no principal to key on and so keeps only the
+per-session window; that residual bypass is recorded in the README's
+Limitations and in the field comment in `vellaveto-http-proxy/src/session.rs`.
 
 ---
 

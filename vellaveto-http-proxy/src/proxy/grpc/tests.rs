@@ -4250,3 +4250,79 @@ async fn grpc_all_four_gates_default_off() {
         );
     }
 }
+
+// ── The denial-of-wallet eviction bypass, on gRPC ───────────────────────────
+
+#[tokio::test]
+async fn grpc_dow_gate_denies_a_fresh_session_for_a_spiking_principal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let gov = vellaveto_config::GovernanceConfig {
+        block_on_denial_of_wallet: true,
+        ..Default::default()
+    };
+    let state = governance_gate_state_grpc(gov, dir.path().join("audit.jsonl"));
+
+    // An earlier session for this principal already burned the ceiling.
+    let now = crate::session::now_ms();
+    for _ in 0..=crate::session::DOW_MAX_CALLS_PER_MINUTE {
+        state
+            .sessions
+            .record_global_call("oauth:grpc-abuser", now, u32::MAX);
+    }
+
+    // A brand-new session carrying the same principal.
+    let session_id = state.sessions.get_or_create(None);
+    {
+        let mut session = state.sessions.get_mut(&session_id).expect("session");
+        session.oauth_subject = Some("grpc-abuser".to_string());
+    }
+
+    let state = std::sync::Arc::new(state);
+    let svc = service::McpGrpcService::new(state.clone(), 100);
+    let mut request = TonicRequest::new(tool_call_proto("read_file", "path", "/tmp/x"));
+    request.metadata_mut().insert(
+        interceptors::METADATA_MCP_SESSION_ID,
+        session_id.parse().expect("metadata session id"),
+    );
+
+    let response =
+        <service::McpGrpcService as proto::mcp_service_server::McpService>::call(&svc, request)
+            .await
+            .expect("grpc response")
+            .into_inner();
+
+    let error = response
+        .error
+        .expect("a fresh session must not reset the principal's rate window");
+    assert_eq!(error.code, -32001);
+    assert_eq!(error.message, "Request blocked: security policy violation");
+}
+
+#[tokio::test]
+async fn grpc_dow_gate_records_against_the_global_window() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = governance_gate_state_grpc(Default::default(), dir.path().join("audit.jsonl"));
+    let session_id = state.sessions.get_or_create(None);
+    {
+        let mut session = state.sessions.get_mut(&session_id).expect("session");
+        session.oauth_subject = Some("grpc-pop".to_string());
+    }
+    assert_eq!(state.sessions.global_dow_len(), 0);
+
+    let state = std::sync::Arc::new(state);
+    let svc = service::McpGrpcService::new(state.clone(), 100);
+    let mut request = TonicRequest::new(tool_call_proto("read_file", "path", "/tmp/x"));
+    request.metadata_mut().insert(
+        interceptors::METADATA_MCP_SESSION_ID,
+        session_id.parse().expect("metadata session id"),
+    );
+    let _ = <service::McpGrpcService as proto::mcp_service_server::McpService>::call(&svc, request)
+        .await
+        .expect("grpc response");
+
+    assert_eq!(
+        state.sessions.global_dow_len(),
+        1,
+        "the gRPC gate must record against the principal's global window"
+    );
+}

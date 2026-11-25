@@ -8830,3 +8830,73 @@ async fn websocket_token_leakage_gate_on_blocks_without_echoing_the_secret() {
         assert!(!whole.contains(leak), "leaked {leak:?}: {response}");
     }
 }
+
+// ── The denial-of-wallet eviction bypass, on WebSocket ──────────────────────
+//
+// Over a real socket, since this transport has no in-process harness.
+
+#[tokio::test]
+async fn websocket_dow_gate_denies_a_fresh_session_for_a_spiking_principal() {
+    let Some(upstream_url) = start_mock_upstream_ws().await else {
+        return;
+    };
+    let tmp = TempDir::new().expect("tempdir");
+    let mut state = build_test_state(&upstream_url, &tmp);
+    state.governance = vellaveto_config::GovernanceConfig {
+        block_on_denial_of_wallet: true,
+        ..Default::default()
+    };
+
+    // An earlier session for this principal already burned the ceiling.
+    let now = vellaveto_http_proxy::session::now_ms();
+    for _ in 0..=vellaveto_http_proxy::session::DOW_MAX_CALLS_PER_MINUTE {
+        state
+            .sessions
+            .record_global_call("oauth:ws-abuser", now, u32::MAX);
+    }
+
+    // A brand-new session carrying the same principal.
+    let session_id = state.sessions.get_or_create(None);
+    {
+        let mut session = state.sessions.get_mut(&session_id).expect("session");
+        session.oauth_subject = Some("ws-abuser".to_string());
+    }
+
+    let Some(proxy_ws_url) = start_proxy_ws_server(state.clone()).await else {
+        return;
+    };
+    let request = format!("{proxy_ws_url}?session_id={session_id}")
+        .into_client_request()
+        .expect("ws request");
+    let (mut client_ws, _) = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio_tungstenite::connect_async(request),
+    )
+    .await
+    .expect("websocket connect timeout")
+    .expect("websocket connect");
+
+    let message = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": "read_file", "arguments": {"path": "/tmp/x"} }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        client_ws.send(WsMessage::Text(message.to_string().into())),
+    )
+    .await
+    .expect("websocket send timeout")
+    .expect("websocket send");
+
+    let response = recv_ws_json(&mut client_ws).await;
+    assert_eq!(response["error"]["code"], json!(-32001), "{response}");
+    assert_eq!(
+        response["error"]["message"],
+        json!("Request blocked: security policy violation"),
+        "a fresh WebSocket session must not reset the principal's rate window: {response}"
+    );
+    assert!(
+        response.get("result").is_none(),
+        "a blocked call must not reach the upstream: {response}"
+    );
+}

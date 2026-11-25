@@ -999,14 +999,24 @@ async fn relay_client_to_upstream(
                             // `.await`. `build_ws_runtime_security_context`
                             // re-enters `state.sessions`, which is why the
                             // pre-lock/in-lock split exists further down.
-                            let dow_findings = {
+                            let (mut dow_findings, dow_principal) = {
                                 match state.sessions.get_mut(&session_id) {
                                     Some(mut session) => {
-                                        session.dow_tracker.record_call(tool_name, 0)
+                                        let principal =
+                                            crate::session::authenticated_principal(&session);
+                                        (session.dow_tracker.record_call(tool_name, 0), principal)
                                     }
-                                    None => Vec::new(),
+                                    None => (Vec::new(), None),
                                 }
                             };
+                            // Guard dropped first: `build_ws_runtime_security_context`
+                            // re-enters sessions for the same reason, which is why the
+                            // pre-lock/in-lock split exists further down.
+                            crate::session::merge_global_dow_finding(
+                                &state.sessions,
+                                dow_principal.as_deref(),
+                                &mut dow_findings,
+                            );
 
                             let gate_action = extractor::extract_action(tool_name, arguments);
                             let mut detections: Vec<(

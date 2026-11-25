@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vellaveto_config::ToolManifest;
-use vellaveto_engine::denial_of_wallet::DoWTracker;
+use vellaveto_engine::denial_of_wallet::{DoWFinding, DoWTracker, DoWType};
 use vellaveto_mcp::memory_tracking::MemoryTracker;
 use vellaveto_mcp::rug_pull::ToolAnnotations;
 use vellaveto_types::{AgentIdentity, ReplayStatus};
@@ -114,13 +114,20 @@ pub struct SessionState {
     /// WebSocket and gRPC tool-call paths via `sessions.get_mut()`, which is the
     /// same route `memory_tracker` above already takes.
     ///
-    /// NOTE (bypass, accepted and recorded rather than silently left): session
-    /// eviction drops this tracker, so a caller who can force eviction -- by
-    /// idling past the timeout, or by pushing the store to its capacity limit --
-    /// resets their own rate window. `flagged_tools` has the same exposure and
-    /// handles it by also consulting a global registry (R240-PROXY-1); doing
-    /// the same here needs a global, tenant-scoped rate store and is deliberately
-    /// out of scope for this change.
+    /// Session eviction drops this tracker, which used to be a bypass: a caller
+    /// who could force eviction -- by idling past the timeout, or by pushing
+    /// the store to its capacity limit -- reset their own rate window.
+    ///
+    /// That is now closed for AUTHENTICATED callers by the global window on
+    /// `SessionStore` (see [`GlobalRateWindow`]), which is keyed on the
+    /// principal and survives rotation. It follows `global_flagged_tools`,
+    /// added for the identical exposure on rug-pull detection (R240-PROXY-1).
+    ///
+    /// Still open, deliberately: an unauthenticated caller has no identifier
+    /// that survives session rotation, so for them this per-session tracker is
+    /// the only rate window and the bypass remains. See
+    /// [`authenticated_principal`] for why client IP was not used as a
+    /// fallback.
     pub dow_tracker: DoWTracker,
     /// Number of elicitation requests processed in this session.
     /// Used for per-session rate limiting of `elicitation/create` requests.
@@ -202,6 +209,26 @@ const MAX_GLOBAL_FLAGGED_TOOLS: usize = 10_000;
 /// After this period, a flagged tool is no longer blocked globally.
 /// Operators who want permanent blocking should use policy rules instead.
 const GLOBAL_FLAGGED_TOOL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Denial-of-wallet call ceiling, per minute.
+///
+/// Used for BOTH the per-session `DoWTracker` and the global per-principal
+/// window, so the two cannot disagree about what a spike is.
+pub const DOW_MAX_CALLS_PER_MINUTE: u32 = 120;
+
+/// Denial-of-wallet token ceiling, per session.
+pub const DOW_MAX_TOKENS_PER_SESSION: u64 = 10_000_000;
+
+/// Denial-of-wallet session duration ceiling (ms).
+pub const DOW_MAX_SESSION_DURATION_MS: u64 = 3_600_000;
+
+/// Milliseconds since the Unix epoch, for the global window.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// SECURITY: Maximum distinct principals tracked in the global denial-of-wallet
 /// window.
 ///
@@ -312,9 +339,12 @@ impl SessionState {
             call_counts: HashMap::new(),
             action_history: VecDeque::new(),
             memory_tracker: MemoryTracker::new(),
-            // Same thresholds the stdio relay uses (relay.rs RelayState::new):
-            // 120 calls/minute, 10M tokens/session, 1 hour.
-            dow_tracker: DoWTracker::new(120, 10_000_000, 3_600_000),
+            // Same thresholds the stdio relay uses (relay.rs RelayState::new).
+            dow_tracker: DoWTracker::new(
+                DOW_MAX_CALLS_PER_MINUTE,
+                DOW_MAX_TOKENS_PER_SESSION,
+                DOW_MAX_SESSION_DURATION_MS,
+            ),
             elicitation_count: 0,
             sampling_count: 0,
             verified_request_nonces: HashSet::new(),
@@ -962,6 +992,50 @@ impl SessionStore {
     pub fn global_dow_len(&self) -> usize {
         self.global_dow.len()
     }
+}
+
+/// Add a cross-session rate-spike finding for `principal`, if one is due.
+///
+/// Called by every transport's denial-of-wallet gate after the per-session
+/// tracker has run and its DashMap guard has been dropped. One function so the
+/// three call sites cannot drift, and so the "drop the guard first" rule has
+/// one place to be stated:
+///
+/// SECURITY: do NOT call this while holding a `sessions.get_mut()` guard. It
+/// re-enters the same DashMap, and the DEADLOCK-FIX notes in handlers.rs and
+/// websocket/mod.rs exist because that has already hung this proxy.
+///
+/// `principal` of `None` means an unauthenticated caller, for whom there is no
+/// identifier that survives session rotation; they keep the per-session window
+/// only. That is the documented limit, not a failure.
+pub fn merge_global_dow_finding(
+    sessions: &SessionStore,
+    principal: Option<&str>,
+    findings: &mut Vec<DoWFinding>,
+) {
+    let Some(principal) = principal else {
+        return;
+    };
+    let Some(count) = sessions.record_global_call(principal, now_ms(), DOW_MAX_CALLS_PER_MINUTE)
+    else {
+        return;
+    };
+    // The per-session tracker may already have flagged a spike for this same
+    // call; one finding per call is enough, and a duplicate would double the
+    // audit entries for a single request.
+    if findings
+        .iter()
+        .any(|f| f.finding_type == DoWType::RateSpike)
+    {
+        return;
+    }
+    findings.push(DoWFinding {
+        finding_type: DoWType::RateSpike,
+        severity: 70,
+        description: format!(
+            "{count} calls in the last minute for this principal across sessions (max {DOW_MAX_CALLS_PER_MINUTE})"
+        ),
+    });
 }
 
 /// The authenticated principal for a session, or `None` when the caller is

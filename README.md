@@ -427,9 +427,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13097 |
+| Rust tests | 13113 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14074 |
+| Total tests tracked by manifest | 14090 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -553,12 +553,17 @@ are hedged the way they are.
   an operator has to turn each on. Both proxies log a startup warning naming any detection
   that is active but not blocking, so the gap is visible rather than silent. They do now
   run on all four transports, so a gate that is turned on applies everywhere.
-- **Denial-of-wallet state resets when a session is evicted.** The tracker is per-session —
-  on `RelayState` for stdio, on `SessionState` for HTTP, WebSocket and gRPC — so a caller
-  who can force eviction, by idling past the session timeout or pushing the store to its
-  capacity limit, resets their own rate window. Rug-pull protection answers the same
-  exposure with a global registry; doing that for rate state needs a global, tenant-scoped
-  store and is not built.
+- **Denial-of-wallet rate state survives session eviction only for authenticated callers.**
+  The per-session tracker is destroyed with its session, so forcing eviction — by idling
+  past the session timeout or pushing the store to its capacity limit — used to reset the
+  caller's own rate window and defeat the gate. On HTTP, WebSocket and gRPC a global window
+  keyed on the authenticated principal (attested `agent_identity`, else the OAuth subject)
+  now closes that. **It does not close for unauthenticated callers**: nothing identifies
+  them across session rotation, so they get the per-session window only, and the bypass
+  stands. Client IP was considered as a fallback and rejected — spoofable, shared behind
+  NAT, rotatable from a pool, and it would throttle unrelated callers sharing an address.
+  The stdio relay is unaffected either way: one session per process, so there is no
+  eviction to exploit.
 - **Neither hardening preset enables the four gates.** `fortress.toml` and
   `sandworm-hardened.toml` leave all four at their default `false`, so choosing the most
   hardened preset does not turn on the hardening that exists. `block_tool_drift`, the
