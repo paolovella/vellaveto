@@ -1230,12 +1230,23 @@ pub async fn handle_mcp_post(
                 // borrow and drop the shard guard before any `.await`: the
                 // DEADLOCK-FIX note further down this function exists because
                 // re-entering `state.sessions` under a held guard hangs the proxy.
-                let dow_findings = {
+                let (mut dow_findings, dow_principal) = {
                     match state.sessions.get_mut(&session_id) {
-                        Some(mut session) => session.dow_tracker.record_call(&tool_name, 0),
-                        None => Vec::new(),
+                        Some(mut session) => {
+                            let principal = crate::session::authenticated_principal(&session);
+                            (session.dow_tracker.record_call(&tool_name, 0), principal)
+                        }
+                        None => (Vec::new(), None),
                     }
                 };
+                // The shard guard above is dropped before this: the global
+                // window re-enters `state.sessions`, which is what the
+                // DEADLOCK-FIX note below this function is about.
+                crate::session::merge_global_dow_finding(
+                    &state.sessions,
+                    dow_principal.as_deref(),
+                    &mut dow_findings,
+                );
 
                 // Ordered as in the stdio relay so audit streams line up across
                 // transports: DoW, jailbreak, token leakage, memory poisoning.

@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use vellaveto_config::ToolManifest;
-use vellaveto_engine::denial_of_wallet::DoWTracker;
+use vellaveto_engine::denial_of_wallet::{DoWFinding, DoWTracker, DoWType};
 use vellaveto_mcp::memory_tracking::MemoryTracker;
 use vellaveto_mcp::rug_pull::ToolAnnotations;
 use vellaveto_types::{AgentIdentity, ReplayStatus};
@@ -114,13 +114,20 @@ pub struct SessionState {
     /// WebSocket and gRPC tool-call paths via `sessions.get_mut()`, which is the
     /// same route `memory_tracker` above already takes.
     ///
-    /// NOTE (bypass, accepted and recorded rather than silently left): session
-    /// eviction drops this tracker, so a caller who can force eviction -- by
-    /// idling past the timeout, or by pushing the store to its capacity limit --
-    /// resets their own rate window. `flagged_tools` has the same exposure and
-    /// handles it by also consulting a global registry (R240-PROXY-1); doing
-    /// the same here needs a global, tenant-scoped rate store and is deliberately
-    /// out of scope for this change.
+    /// Session eviction drops this tracker, which used to be a bypass: a caller
+    /// who could force eviction -- by idling past the timeout, or by pushing
+    /// the store to its capacity limit -- reset their own rate window.
+    ///
+    /// That is now closed for AUTHENTICATED callers by the global window on
+    /// `SessionStore` (see [`GlobalRateWindow`]), which is keyed on the
+    /// principal and survives rotation. It follows `global_flagged_tools`,
+    /// added for the identical exposure on rug-pull detection (R240-PROXY-1).
+    ///
+    /// Still open, deliberately: an unauthenticated caller has no identifier
+    /// that survives session rotation, so for them this per-session tracker is
+    /// the only rate window and the bypass remains. See
+    /// [`authenticated_principal`] for why client IP was not used as a
+    /// fallback.
     pub dow_tracker: DoWTracker,
     /// Number of elicitation requests processed in this session.
     /// Used for per-session rate limiting of `elicitation/create` requests.
@@ -202,9 +209,78 @@ const MAX_GLOBAL_FLAGGED_TOOLS: usize = 10_000;
 /// After this period, a flagged tool is no longer blocked globally.
 /// Operators who want permanent blocking should use policy rules instead.
 const GLOBAL_FLAGGED_TOOL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+/// Denial-of-wallet call ceiling, per minute.
+///
+/// Used for BOTH the per-session `DoWTracker` and the global per-principal
+/// window, so the two cannot disagree about what a spike is.
+pub const DOW_MAX_CALLS_PER_MINUTE: u32 = 120;
+
+/// Denial-of-wallet token ceiling, per session.
+pub const DOW_MAX_TOKENS_PER_SESSION: u64 = 10_000_000;
+
+/// Denial-of-wallet session duration ceiling (ms).
+pub const DOW_MAX_SESSION_DURATION_MS: u64 = 3_600_000;
+
+/// Milliseconds since the Unix epoch, for the global window.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
+/// SECURITY: Maximum distinct principals tracked in the global denial-of-wallet
+/// window.
+///
+/// Sized against the <50MB memory baseline: 4096 principals x
+/// MAX_GLOBAL_DOW_WINDOW timestamps x 8 bytes is roughly 8MB worst case.
+const MAX_GLOBAL_DOW_PRINCIPALS: usize = 4096;
+
+/// SECURITY: Maximum timestamps retained per principal in the global window.
+///
+/// Deliberately NOT `DoWTracker`'s 1000. Detecting "more than N calls in the
+/// last minute" needs only N+1 timestamps, and the configured ceiling is 120,
+/// so 256 is ample headroom while keeping the per-principal cost at 2KB.
+const MAX_GLOBAL_DOW_WINDOW: usize = 256;
+
+/// Width of the global denial-of-wallet window (ms). Matches the rate window in
+/// `vellaveto_engine::denial_of_wallet`.
+const GLOBAL_DOW_WINDOW_MS: u64 = 60_000;
+
+/// Idle TTL for a principal's global window. A principal that has not called in
+/// this long is evicted to bound the map.
+const GLOBAL_DOW_IDLE_TTL: Duration = Duration::from_secs(300);
+
 /// SECURITY: Maximum number of verified detached request-signature nonces kept
 /// per session for replay detection.
 const MAX_VERIFIED_REQUEST_NONCES: usize = 1024;
+
+/// Per-principal call window for global denial-of-wallet detection.
+///
+/// Exists because the per-session `DoWTracker` on `SessionState` is destroyed
+/// when a session is evicted, so a caller who could force eviction -- by idling
+/// past the session timeout or pushing the store to its capacity limit -- reset
+/// their own rate window and defeated the gate. This window is keyed on the
+/// authenticated principal instead, so it survives session rotation. Same shape
+/// as the global flagged-tools registry below, which exists for the identical
+/// bypass on rug-pull detection (R240-PROXY-1).
+///
+/// Only the call RATE lives here. Recursive-loop, token-exhaustion and
+/// session-duration detection are inherently per-session and stay on
+/// `DoWTracker`.
+#[derive(Debug)]
+pub struct GlobalRateWindow {
+    /// Call timestamps (ms), pruned to the window on every record.
+    call_timestamps: Vec<u64>,
+    /// Last activity, for idle eviction.
+    last_seen: Instant,
+}
+
+impl GlobalRateWindow {
+    fn is_idle(&self) -> bool {
+        self.last_seen.elapsed() > GLOBAL_DOW_IDLE_TTL
+    }
+}
 
 /// Entry in the global flagged-tools registry.
 /// Records when a tool was flagged so it can be expired after TTL.
@@ -263,9 +339,12 @@ impl SessionState {
             call_counts: HashMap::new(),
             action_history: VecDeque::new(),
             memory_tracker: MemoryTracker::new(),
-            // Same thresholds the stdio relay uses (relay.rs RelayState::new):
-            // 120 calls/minute, 10M tokens/session, 1 hour.
-            dow_tracker: DoWTracker::new(120, 10_000_000, 3_600_000),
+            // Same thresholds the stdio relay uses (relay.rs RelayState::new).
+            dow_tracker: DoWTracker::new(
+                DOW_MAX_CALLS_PER_MINUTE,
+                DOW_MAX_TOKENS_PER_SESSION,
+                DOW_MAX_SESSION_DURATION_MS,
+            ),
             elicitation_count: 0,
             sampling_count: 0,
             verified_request_nonces: HashSet::new(),
@@ -640,6 +719,10 @@ pub struct SessionStore {
     /// where session eviction (timeout or capacity) drops flagged_tools,
     /// allowing an attacker to call a rug-pulled tool in a new session.
     global_flagged_tools: Arc<DashMap<String, GlobalFlaggedToolEntry>>,
+    /// SECURITY: Global denial-of-wallet window keyed on the authenticated
+    /// principal, so the rate gate survives session eviction. See
+    /// [`GlobalRateWindow`].
+    global_dow: Arc<DashMap<String, GlobalRateWindow>>,
 }
 
 impl SessionStore {
@@ -650,6 +733,7 @@ impl SessionStore {
             max_sessions,
             max_lifetime: None,
             global_flagged_tools: Arc::new(DashMap::new()),
+            global_dow: Arc::new(DashMap::new()),
         }
     }
 
@@ -837,6 +921,150 @@ impl SessionStore {
     pub fn global_flagged_tools_len(&self) -> usize {
         self.global_flagged_tools.len()
     }
+
+    // =========================================================================
+    // Global Denial-of-Wallet Window
+    // =========================================================================
+
+    /// Record a call against `principal`'s global window and report a rate
+    /// spike.
+    ///
+    /// Returns `Some(count)` when the number of calls inside the window exceeds
+    /// `threshold`, otherwise `None`.
+    ///
+    /// SECURITY: this is what makes the denial-of-wallet gate survive session
+    /// eviction. The per-session `DoWTracker` is destroyed with its session, so
+    /// a caller who could force eviction reset their own rate window; keying on
+    /// the authenticated principal closes that. Same reasoning and same shape as
+    /// `flag_tool_globally` above (R240-PROXY-1).
+    ///
+    /// The window is pruned before recording, deliberately: `DoWTracker` once
+    /// capped its window without ever evicting, which froze the count at zero
+    /// once the cap was reached and silently disabled the check. Do not
+    /// reintroduce that.
+    pub fn record_global_call(&self, principal: &str, now_ms: u64, threshold: u32) -> Option<u32> {
+        if !self.global_dow.contains_key(principal)
+            && self.global_dow.len() >= MAX_GLOBAL_DOW_PRINCIPALS
+        {
+            // Make room by dropping idle principals; if still full, skip rather
+            // than grow without bound.
+            self.evict_idle_global_dow();
+            if self.global_dow.len() >= MAX_GLOBAL_DOW_PRINCIPALS {
+                tracing::warn!(
+                    capacity = MAX_GLOBAL_DOW_PRINCIPALS,
+                    "Global denial-of-wallet window at capacity; not tracking new principal"
+                );
+                return None;
+            }
+        }
+
+        let window_start = now_ms.saturating_sub(GLOBAL_DOW_WINDOW_MS);
+        let mut entry = self
+            .global_dow
+            .entry(principal.to_string())
+            .or_insert_with(|| GlobalRateWindow {
+                call_timestamps: Vec::new(),
+                last_seen: Instant::now(),
+            });
+
+        entry.last_seen = Instant::now();
+        entry.call_timestamps.retain(|&t| t >= window_start);
+        if entry.call_timestamps.len() < MAX_GLOBAL_DOW_WINDOW {
+            entry.call_timestamps.push(now_ms);
+        }
+
+        let count = u32::try_from(entry.call_timestamps.len()).unwrap_or(u32::MAX);
+        if count > threshold {
+            Some(count)
+        } else {
+            None
+        }
+    }
+
+    /// Drop principals whose global window has been idle past its TTL.
+    pub fn evict_idle_global_dow(&self) -> usize {
+        let before = self.global_dow.len();
+        self.global_dow.retain(|_, window| !window.is_idle());
+        before.saturating_sub(self.global_dow.len())
+    }
+
+    /// Number of principals tracked in the global denial-of-wallet window.
+    pub fn global_dow_len(&self) -> usize {
+        self.global_dow.len()
+    }
+}
+
+/// Add a cross-session rate-spike finding for `principal`, if one is due.
+///
+/// Called by every transport's denial-of-wallet gate after the per-session
+/// tracker has run and its DashMap guard has been dropped. One function so the
+/// three call sites cannot drift, and so the "drop the guard first" rule has
+/// one place to be stated:
+///
+/// SECURITY: do NOT call this while holding a `sessions.get_mut()` guard. It
+/// re-enters the same DashMap, and the DEADLOCK-FIX notes in handlers.rs and
+/// websocket/mod.rs exist because that has already hung this proxy.
+///
+/// `principal` of `None` means an unauthenticated caller, for whom there is no
+/// identifier that survives session rotation; they keep the per-session window
+/// only. That is the documented limit, not a failure.
+pub fn merge_global_dow_finding(
+    sessions: &SessionStore,
+    principal: Option<&str>,
+    findings: &mut Vec<DoWFinding>,
+) {
+    let Some(principal) = principal else {
+        return;
+    };
+    let Some(count) = sessions.record_global_call(principal, now_ms(), DOW_MAX_CALLS_PER_MINUTE)
+    else {
+        return;
+    };
+    // The per-session tracker may already have flagged a spike for this same
+    // call; one finding per call is enough, and a duplicate would double the
+    // audit entries for a single request.
+    if findings
+        .iter()
+        .any(|f| f.finding_type == DoWType::RateSpike)
+    {
+        return;
+    }
+    findings.push(DoWFinding {
+        finding_type: DoWType::RateSpike,
+        severity: 70,
+        description: format!(
+            "{count} calls in the last minute for this principal across sessions (max {DOW_MAX_CALLS_PER_MINUTE})"
+        ),
+    });
+}
+
+/// The authenticated principal for a session, or `None` when the caller is
+/// unauthenticated.
+///
+/// Prefers the cryptographically attested `agent_identity` (OWASP ASI07) over
+/// the OAuth subject. One function so the three transports that need it cannot
+/// drift apart.
+///
+/// SECURITY: `None` is the documented limit of the global denial-of-wallet
+/// window, not an error. `session_scope_binding` is regenerated per session and
+/// both identity fields are optional, so an unauthenticated caller has no
+/// identifier that survives session rotation; they get the per-session window
+/// only. Client IP was considered and rejected as a fallback: spoofable, shared
+/// behind NAT, rotatable from a pool, and it would throttle unrelated callers
+/// sharing an address.
+pub fn authenticated_principal(session: &SessionState) -> Option<String> {
+    if let Some(identity) = session.agent_identity.as_ref() {
+        if let Some(subject) = identity.subject.as_ref() {
+            if !subject.is_empty() {
+                return Some(format!("agent:{subject}"));
+            }
+        }
+    }
+    session
+        .oauth_subject
+        .as_ref()
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("oauth:{s}"))
 }
 
 #[cfg(test)]
@@ -1620,5 +1848,190 @@ mod tests {
         // Zero-width space U+200B — Unicode format character
         let new_id2 = store.get_or_create(Some("session\u{200B}id"));
         assert_ne!(new_id2, "session\u{200B}id");
+    }
+    // ── Global denial-of-wallet window ──────────────────────────────────────
+    //
+    // The bypass these close: the per-session `DoWTracker` dies with its
+    // session, so a caller who can force eviction -- idle past the timeout, or
+    // push the store to its capacity limit -- resets their own rate window and
+    // the gate stops firing. Mirrors the rug-pull TOCTOU test above, which
+    // exists for the identical problem.
+
+    fn principal_window_count(store: &SessionStore, principal: &str) -> usize {
+        store
+            .global_dow
+            .get(principal)
+            .map(|w| w.call_timestamps.len())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn global_dow_window_survives_session_eviction() {
+        // Capacity 1 so the next `get_or_create` evicts.
+        let store = SessionStore::new(Duration::from_secs(300), 1);
+        let principal = "agent:billing-abuser";
+        let now = 1_000_000u64;
+
+        let id1 = store.get_or_create(None);
+        // Drive past a threshold of 5 within one window.
+        let mut spiked = None;
+        for _ in 0..7 {
+            spiked = store.record_global_call(principal, now, 5);
+        }
+        assert!(spiked.is_some(), "the window must report a spike");
+
+        // Evict the session the way the rug-pull test does.
+        store.get_or_create(None);
+        store.get_or_create(None);
+        assert!(
+            store.get_mut(&id1).is_none(),
+            "session should have been evicted"
+        );
+
+        // A fresh session for the SAME principal must still be caught. Without
+        // the global window this is where the bypass worked.
+        let _id2 = store.get_or_create(None);
+        assert!(
+            store.record_global_call(principal, now, 5).is_some(),
+            "the rate gate must survive session eviction for the same principal"
+        );
+    }
+
+    #[test]
+    fn global_dow_windows_do_not_interfere_across_principals() {
+        // A misfiring global throttle is an outage, so this is as important as
+        // the bypass test: one principal's burst must not deny another.
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let now = 2_000_000u64;
+
+        for _ in 0..10 {
+            store.record_global_call("agent:noisy", now, 5);
+        }
+        assert!(store.record_global_call("agent:noisy", now, 5).is_some());
+        assert!(
+            store.record_global_call("agent:quiet", now, 5).is_none(),
+            "a different principal must not inherit the burst"
+        );
+    }
+
+    #[test]
+    fn global_dow_window_slides() {
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let t0 = 3_000_000u64;
+        for _ in 0..10 {
+            store.record_global_call("agent:p", t0, 5);
+        }
+        assert_eq!(principal_window_count(&store, "agent:p"), 10);
+
+        // One window later the earlier burst must be gone, not merely capped.
+        let t1 = t0 + GLOBAL_DOW_WINDOW_MS + 1;
+        assert!(
+            store.record_global_call("agent:p", t1, 5).is_none(),
+            "a single call after the window moved on is not a spike"
+        );
+        assert_eq!(
+            principal_window_count(&store, "agent:p"),
+            1,
+            "aged-out timestamps must be evicted, not retained"
+        );
+    }
+
+    #[test]
+    fn global_dow_window_is_capped_per_principal() {
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let now = 4_000_000u64;
+        for _ in 0..(MAX_GLOBAL_DOW_WINDOW + 100) {
+            store.record_global_call("agent:p", now, u32::MAX);
+        }
+        assert!(
+            principal_window_count(&store, "agent:p") <= MAX_GLOBAL_DOW_WINDOW,
+            "per-principal window grew past its cap: {}",
+            principal_window_count(&store, "agent:p")
+        );
+    }
+
+    #[test]
+    fn global_dow_respects_principal_capacity() {
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let now = 5_000_000u64;
+        for i in 0..(MAX_GLOBAL_DOW_PRINCIPALS + 50) {
+            store.record_global_call(&format!("agent:{i}"), now, 120);
+        }
+        assert!(
+            store.global_dow_len() <= MAX_GLOBAL_DOW_PRINCIPALS,
+            "principal map grew past its cap: {}",
+            store.global_dow_len()
+        );
+    }
+
+    #[test]
+    fn global_dow_evicts_idle_principals() {
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        store.record_global_call("agent:fresh", 6_000_000, 120);
+        // Backdate one entry past the idle TTL rather than sleeping for it.
+        store.global_dow.insert(
+            "agent:stale".to_string(),
+            GlobalRateWindow {
+                call_timestamps: vec![1],
+                last_seen: Instant::now() - (GLOBAL_DOW_IDLE_TTL + Duration::from_secs(1)),
+            },
+        );
+        assert_eq!(store.global_dow_len(), 2);
+
+        let removed = store.evict_idle_global_dow();
+        assert_eq!(removed, 1, "only the idle principal should go");
+        assert_eq!(store.global_dow_len(), 1);
+        assert!(store.global_dow.contains_key("agent:fresh"));
+    }
+
+    #[test]
+    fn authenticated_principal_prefers_attested_identity() {
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let id = store.get_or_create(None);
+
+        // Neither set: unauthenticated, which is the documented limit.
+        assert!(
+            authenticated_principal(&store.get(&id).expect("session")).is_none(),
+            "an unauthenticated session has no principal to key on"
+        );
+
+        {
+            let mut session = store.get_mut(&id).expect("session");
+            session.oauth_subject = Some("sub-123".to_string());
+        }
+        assert_eq!(
+            authenticated_principal(&store.get(&id).expect("session")),
+            Some("oauth:sub-123".to_string())
+        );
+
+        {
+            let mut session = store.get_mut(&id).expect("session");
+            session.agent_identity = Some(vellaveto_types::AgentIdentity {
+                subject: Some("agent-a".to_string()),
+                ..Default::default()
+            });
+        }
+        assert_eq!(
+            authenticated_principal(&store.get(&id).expect("session")),
+            Some("agent:agent-a".to_string()),
+            "attested identity must win over the OAuth subject"
+        );
+    }
+
+    #[test]
+    fn authenticated_principal_ignores_empty_strings() {
+        // An empty subject is not an identity; keying on "" would merge every
+        // such caller into one shared bucket and throttle them together.
+        let store = SessionStore::new(Duration::from_secs(300), 100);
+        let id = store.get_or_create(None);
+        {
+            let mut session = store.get_mut(&id).expect("session");
+            session.oauth_subject = Some(String::new());
+            session.agent_identity = Some(vellaveto_types::AgentIdentity {
+                subject: Some(String::new()),
+                ..Default::default()
+            });
+        }
+        assert!(authenticated_principal(&store.get(&id).expect("session")).is_none());
     }
 }

@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`--preset devops-agent` could not start, and the test written to prevent that was
+  watching the wrong directory.** The shipped preset carried `op = "exact"`, which is not a
+  constraint operator; `policy_compile.rs` rejects it, so the proxy exited at startup.
+  Reproduced before fixing: `Unknown constraint operator 'exact'`.
+
+  There are two copies of every preset with no sync check. `vellaveto-proxy/presets/` is
+  what ships — `presets.rs` embeds it with `include_str!("../presets/...")`. `examples/presets/`
+  is documentation. Coverage was pointed at the wrong one in all three places: the only
+  test that calls `PolicyEngine::with_policies` read `examples/`, on the stated grounds that
+  those are "user-facing"; so did the regression test written for this exact bug, which
+  therefore passed throughout; and the one test that does read the shipped copies calls
+  `PolicyConfig::from_toml` only, where `"exact"` is a valid TOML string. Net effect: the
+  copy users load had parse-only coverage and the copy nobody loads had the compile gate.
+
+  Both directories are now compile-checked, 36 presets instead of 18, with failures labelled
+  by copy. Not a byte-for-byte diff test: the two trees legitimately differ today. The
+  `presets.rs` module doc also named `examples/presets/` while the `include_str!` calls three
+  lines below named `../presets/` — plausibly how the original fix landed in the wrong copy.
+  The other 17 shipped presets all compile.
+
+- **Denial-of-wallet rate state now survives session eviction, for authenticated callers.**
+  The gate shipped in the previous release kept its rate window on the session, so forcing
+  eviction — idling past the session timeout, or pushing the store to its capacity limit —
+  reset the caller's own window and the gate stopped firing. That is a bypass of a gate sold
+  as protection against billing abuse, available to exactly the party it is meant to stop.
+
+  `SessionStore` gains a global window keyed on the authenticated principal (attested
+  `agent_identity`, else the OAuth subject), consulted by the HTTP, WebSocket and gRPC gates.
+  It follows `global_flagged_tools`, which exists for the identical exposure on rug-pull
+  detection (R240-PROXY-1) — bounded insert with back-off, TTL eviction, capacity test.
+
+  The previous release said closing this "needs a global, tenant-scoped rate store and is
+  deliberately out of scope". That was wrong in our own favour: the pattern was already in
+  the same file. Corrected in the README, the field comment and the boundary inventory.
+
+  **The limit, stated rather than implied away:** an unauthenticated caller has nothing that
+  survives session rotation, so they keep the per-session window only and the bypass stands
+  for them. Client IP was rejected as a fallback — spoofable, shared behind NAT, rotatable
+  from a pool, and it would throttle unrelated callers sharing an address. Only the call
+  *rate* is global; recursive-loop, token-exhaustion and session-duration detection are
+  inherently per-session. The stdio relay is unaffected: one session per process.
+
+  Three bounds, since a per-principal map is a new growth surface against a <50MB baseline:
+  4096 principals, a 256-entry window each (~8MB worst case), and a 300s idle TTL. The
+  window prunes before recording — the same mistake that froze `DoWTracker`'s window is
+  called out in a comment so it is not reintroduced.
+
+  15 new tests. Every one mutation-tested: removing the global lookup fails the bypass test
+  on each transport; keying on the session id instead of the principal fails both the bypass
+  and the unauthenticated-limit tests; dropping either bound fails its capacity test;
+  preferring the OAuth subject over the attested identity fails the preference test.
+
 - **Transport parity for the four gated detections, and two DoW defects fixed on the way.**
   Denial-of-wallet, jailbreak patterns (MITRE AML.T0054), token/credential leakage and
   memory-query poisoning (MINJA) each had **exactly one call site in the whole workspace**,
