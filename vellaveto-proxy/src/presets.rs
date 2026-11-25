@@ -7,7 +7,15 @@
 
 //! Built-in policy presets for zero-config usage.
 //!
-//! Embeds preset TOML configs from `examples/presets/` at compile time
+//! Embeds preset TOML configs from `vellaveto-proxy/presets/` at compile time
+//!
+//! NOTE: this directory, not `examples/presets/`. The two are separate copies
+//! with no sync check. This comment used to name `examples/presets/`, and that
+//! is plausibly how issue #407 came to be fixed in the copy nobody loads while
+//! `--preset devops-agent` stayed broken: a reader follows the comment, edits
+//! `examples/`, and believes they changed what ships. Both directories are now
+//! compile-checked by
+//! `vellaveto-integration/tests/shipped_presets_compile.rs`.
 //! so users can run `vellaveto-proxy --preset dev-laptop` without a config file.
 //!
 //! Protection levels (`shield`, `fortress`, `vault`) are beginner-friendly
