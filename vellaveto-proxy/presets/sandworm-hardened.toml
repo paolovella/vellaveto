@@ -10,7 +10,7 @@
 #   - Harvests LLM API keys from env vars and .env files
 #   - Propagates via stolen GitHub/npm tokens
 #
-# This preset enables ALL defensive layers with fail-closed defaults:
+# This preset enables the following defensive layers with fail-closed defaults:
 #   1. Supply chain binary verification (SHA-256 hash allowlist)
 #   2. ETDI cryptographic tool signatures (Ed25519, required)
 #   3. Server registration enforcement (known_servers allowlist)
@@ -18,6 +18,8 @@
 #   5. Injection scanning (blocking mode)
 #   6. DLP credential scanning
 #   7. Shadow AI discovery (active enforcement)
+#   8. Governance denial gates: jailbreak patterns, token/credential leakage in
+#      parameters, MINJA memory-query poisoning, denial-of-wallet (all blocking)
 #
 # IMPORTANT: You MUST populate [supply_chain.allowed_servers] with the SHA-256
 # hashes of your legitimate MCP server binaries, and [governance.known_servers]
@@ -94,6 +96,36 @@ known_servers = []
 # Registered agent identities. Unregistered agents are DENIED.
 # ADD YOUR AGENT IDS HERE.
 registered_agents = []
+
+# --- Governance denial gates (jailbreak / token leakage / MINJA / DoW) ---
+# These four detections always scan and always audit; each gate decides whether
+# a match DENIES the call or is only recorded. All four default to false
+# globally, because they shipped without a gate at all and defaulting them on
+# would change what every existing deployment does. A preset named for hardening
+# is the place to turn them on.
+#
+# Note on the two different memory-poisoning checks, which are easy to conflate
+# because both report DecisionOrigin::MemoryPoisoning:
+#   [memory_tracking].block_on_match  -> response data replayed back into a later
+#                                        tool call (fingerprint tracker, ASI06)
+#   block_on_memory_poisoning         -> MINJA memory-manipulation phrasing in
+#                                        the parameters themselves
+# They catch different attacks. This preset enables the MINJA parameter gate
+# only. The replay tracker stays off here (it is off by default) and is a
+# deliberate omission, not an oversight: it fingerprints any response string of
+# 20+ characters and flags it reappearing verbatim in a later tool call, so on a
+# coding assistant -- this preset's whole threat model -- reading a file and
+# writing it back trips it. Turn it on with [memory_tracking] enabled = true and
+# block_on_match = true if your agents do not pass response data onward.
+#
+# These are heuristics: jailbreak phrasing and call-rate patterns can
+# false-positive. If a legitimate tool trips one, set that single gate to false
+# rather than abandoning the preset -- the audit entry names which fired.
+block_on_jailbreak = true
+block_on_token_leakage = true
+block_on_memory_poisoning = true
+block_on_denial_of_wallet = true
+
 
 # ═══════════════════════════════════════════════════════════════════
 # 4. POLICIES: Default-deny with credential protection
@@ -187,7 +219,19 @@ block_on_finding = true
 [audit]
 redaction_level = "KeysAndPatterns"
 
+# --- ACIS semantic containment ---
+[acis]
+block_tainted_privileged_sinks = true
+require_lineage_for_privileged_sinks = true
+containment_mode = "quarantine"
+
 # --- Source trust classification (Phase 6 channel separation) ---
+# Which tools produce untrusted content, how sinks are classified, and which
+# sinks this preset's agents may reach at all. `source_trust.untrusted_tools` is
+# what gives the [acis] tainted-sink guard above something to act on: with it
+# empty, no tool output is marked untrusted and that guard never fires on this
+# preset's own classification. Explicit `sink_classification.rules` replace the
+# heuristic classifier, which stays as the fallback for tools no rule matches.
 [source_trust]
 default_tool_trust = "untrusted"
 untrusted_tools = ["fetch_url", "fetch", "browse_*", "search_*", "scrape_*", "http_*", "curl_*", "wget_*"]
@@ -195,27 +239,35 @@ untrusted_tools = ["fetch_url", "fetch", "browse_*", "search_*", "scrape_*", "ht
 [[sink_classification.rules]]
 tool_pattern = "execute_*"
 sink_class = "code_execution"
+
 [[sink_classification.rules]]
 tool_pattern = "run_*"
 sink_class = "code_execution"
+
 [[sink_classification.rules]]
 tool_pattern = "bash"
 sink_class = "code_execution"
+
 [[sink_classification.rules]]
 tool_pattern = "shell"
 sink_class = "code_execution"
+
 [[sink_classification.rules]]
 tool_pattern = "write_*"
 sink_class = "filesystem_write"
+
 [[sink_classification.rules]]
 tool_pattern = "delete_*"
 sink_class = "filesystem_write"
+
 [[sink_classification.rules]]
 tool_pattern = "read_*"
 sink_class = "read_only"
+
 [[sink_classification.rules]]
 tool_pattern = "list_*"
 sink_class = "read_only"
+
 [[sink_classification.rules]]
 tool_pattern = "get_*"
 sink_class = "read_only"
@@ -225,9 +277,3 @@ allowed_sink_classes = ["read_only"]
 denied_tools = ["execute_*", "run_*", "bash", "shell"]
 out_of_scope_action = "Deny"
 max_distinct_tools = 5
-
-# --- ACIS semantic containment ---
-[acis]
-block_tainted_privileged_sinks = true
-require_lineage_for_privileged_sinks = true
-containment_mode = "quarantine"

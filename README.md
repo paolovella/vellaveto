@@ -427,9 +427,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13113 |
+| Rust tests | 13116 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14090 |
+| Total tests tracked by manifest | 14093 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -448,13 +448,14 @@ The live property catalog is maintained in [formal/README.md](formal/README.md);
 
 ### Previously Documented Limitations, Since Closed
 
-Four limitations documented in earlier releases have since been closed. This is a
-record of those four only — it is not a claim that none remain. Current ones are in
+Five limitations documented in earlier releases have since been closed. This is a
+record of those five only — it is not a claim that none remain. Current ones are in
 [Limitations](#limitations) below.
 
 - **Cross-call DLP** — `SessionDlpTracker` with overlap buffers detects secrets split across multiple tool calls within a session (~150 bytes state per field). See [`cross_call_dlp.rs`](vellaveto-mcp/src/inspection/cross_call_dlp.rs).
 - **Grammar-validated injection** — JSON Schema `pattern` constraints compiled to DFAs provide a positive security model (Phase 72). The existing Aho-Corasick pre-filter remains as defense-in-depth. Covered by MCPSEC A14 regression tests (ours, not an independent check).
 - **TLS termination** — Built-in rustls-based TLS/mTLS via the [`vellaveto-tls`](vellaveto-tls/) crate. Supports SPIFFE identity extraction, post-quantum key exchange policies, and automatic ALPN negotiation. External reverse proxy remains optional.
+- **Preset directory drift** — `vellaveto-proxy/presets/` (shipped, embedded via `include_str!`) and `examples/presets/` (what `scripts/install.sh` and the signup response tell a new user to pass to `--config`) had diverged on six presets, the `examples/` copy missing `[source_trust]`, `[[sink_classification.rules]]` and `[intent_scope]`. The two directories are now byte-identical and a test enforces it; the previous guard compared filenames, which could not catch a difference in contents. The enforcement delta was concentrated in two settings: `source_trust.untrusted_tools` defaults to empty, so no tool output was classified untrusted and the `[acis]` tainted-privileged-sink guard had nothing of the preset's own classification to fire on; and `intent_scope` is `Option`, so an absent table meant no sink-class restriction, no denied tools and no tool-count cap at all. `sink_classification` was the milder case — `fallback_to_heuristic` defaults true, so sinks were still classified, just without the preset's explicit rules.
 - **Independent verification** — [Bug bounty program](SECURITY_BOUNTY.md) (HackerOne + Huntr), [OSTIF audit scope](docs/OSTIF_AUDIT_SCOPE.md), Codecov integration, and OpenSSF Best Practices Badge enrollment.
 
 Full details: [Security Guarantees](docs/SECURITY_GUARANTEES.md) | [Threat Model](docs/THREAT_MODEL.md) | [Assurance Case](docs/ASSURANCE_CASE.md) | [ACIS Contract](docs/ACIS_CONTRACT.md)

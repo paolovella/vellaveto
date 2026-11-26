@@ -20,13 +20,17 @@ max_pii_mappings = 50000
 max_sessions = 1000
 max_history_per_session = 10000
 
-# Withhold correlation and tracing headers from upstream requests. Applies to
-# the HTTP proxy; no effect on a stdio proxy. Off by default because it also
-# disables distributed tracing through the proxy.
+# Withhold correlation and tracing headers (traceparent, tracestate, the
+# x-*-trace-id family) from upstream requests. Applies to the HTTP proxy;
+# it has no effect on this stdio shield, which makes no network requests
+# of its own. Off by default because it also disables distributed tracing
+# through the proxy.
 strip_privacy_headers = false
 
-# Traffic padding is NOT implemented — the padding format needs peer
-# negotiation that does not exist yet. See vellaveto-http-proxy-shield/README.md.
+# Traffic padding is NOT implemented. The padding format is a length-prefixed
+# framing that only works when both peers agree to it, and no negotiation
+# exists yet — setting this true pads nothing. See
+# vellaveto-http-proxy-shield/README.md.
 traffic_padding = false
 
 # ── Session Unlinkability (Sprint 2) ─────────────────────────────
@@ -42,7 +46,13 @@ credential_epoch_interval = 100
 # "level2" = level1 + filler word removal
 stylometric_level = "none"
 
-# Optional: Add custom PII patterns beyond the built-in set
+# Optional: Add custom PII patterns beyond the built-in set.
+#
+# Built-ins already cover: file paths (POSIX, ~/, Windows), emails, US phone
+# numbers, SSNs, credit cards (Luhn-checked), IPv4, IPv6, JWTs, and AWS key
+# IDs. There is no built-in personal-name detection — that needs named-entity
+# recognition, not a regex — so add site-specific patterns here for names,
+# employee IDs, internal hostnames, and the like.
 # [[shield.custom_pii_patterns]]
 # name = "employee_id"
 # pattern = "EMP-\\d{6}"
