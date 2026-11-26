@@ -16,7 +16,11 @@
 #   [x] Destructive operations (force push, hard reset -- requires approval)
 #   [x] Prompt injection attacks (blocking mode)
 #   [x] Credential leaks in tool responses (blocking DLP)
-#   [x] Memory poisoning detection (blocking mode)
+#   [x] Memory poisoning -- replayed response data (blocking mode)
+#   [x] Memory poisoning -- MINJA query manipulation (blocking mode)
+#   [x] Jailbreak patterns in tool parameters (blocking mode)
+#   [x] Token/credential leakage in tool parameters (blocking mode)
+#   [x] Denial-of-wallet: rate spikes, recursive loops (blocking mode)
 #   [x] Shadow agent detection
 #
 # WHAT'S ALLOWED:
@@ -307,6 +311,30 @@ block_on_match = true
 # --- Shadow agent detection ---
 [shadow_agent]
 enabled = true
+
+[governance]
+# --- Governance denial gates (jailbreak / token leakage / MINJA / DoW) ---
+# These four detections always scan and always audit; each gate decides whether
+# a match DENIES the call or is only recorded. All four default to false
+# globally, because they shipped without a gate at all and defaulting them on
+# would change what every existing deployment does. A preset named for hardening
+# is the place to turn them on.
+#
+# Note on the two different memory-poisoning checks, which are easy to conflate
+# because both report DecisionOrigin::MemoryPoisoning:
+#   [memory_tracking].block_on_match  -> response data replayed back into a later
+#                                        tool call (fingerprint tracker, ASI06)
+#   block_on_memory_poisoning         -> MINJA memory-manipulation phrasing in
+#                                        the parameters themselves
+# They catch different attacks. This preset enables both.
+#
+# These are heuristics: jailbreak phrasing and call-rate patterns can
+# false-positive. If a legitimate tool trips one, set that single gate to false
+# rather than abandoning the preset -- the audit entry names which fired.
+block_on_jailbreak = true
+block_on_token_leakage = true
+block_on_memory_poisoning = true
+block_on_denial_of_wallet = true
 
 # --- Audit ---
 

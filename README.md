@@ -427,9 +427,9 @@ Formal verification spans TLA+, Verus, Kani, Lean 4, Coq, and Alloy. Current cou
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13113 |
+| Rust tests | 13115 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14090 |
+| Total tests tracked by manifest | 14092 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |
@@ -655,6 +655,20 @@ are hedged the way they are.
 - **Signed checkpoints are opt-in and need a persistent key.** Without
   `VELLAVETO_SIGNING_KEY` a fresh key is generated per process and checkpoints do not survive
   a restart. Signatures attest authorship, not time.
+- **The two preset directories have drifted, and `examples/presets/` is the weaker copy.**
+  `vellaveto-proxy/presets/` is what ships (embedded via `include_str!`); `examples/presets/`
+  is what the docs — and several presets' own usage lines, including `sandworm-hardened`'s —
+  tell you to pass to `--config`. Six presets differ: `consumer-shield`, `dev-laptop`,
+  `fortress`, `sandworm-hardened`, `shield` and `vault` are each missing whole
+  `[source_trust]`, `[sink_classification]` and `[intent_scope]` tables in their `examples/`
+  copy, so `--config examples/presets/fortress.toml` enforces less than `--preset fortress`
+  with no error to show it. For `sandworm-hardened` the omission includes
+  `out_of_scope_action = "Deny"` and `max_distinct_tools = 5`. Reconciling them is not a
+  one-way copy: the shipped copies carry more configuration, but the `examples/` copies carry
+  more accurate comments, so it needs a per-file merge. Until then, prefer `--preset <name>`
+  over `--config examples/presets/<name>.toml`. The existing guard compares filenames across
+  the two directories, which cannot catch this — every file is present and only the contents
+  differ.
 
 ### Maturity
 

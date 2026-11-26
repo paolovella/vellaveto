@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The two hardening presets now enforce the four governance denial gates.**
+  `fortress.toml` and `sandworm-hardened.toml` set `governance.block_on_jailbreak`,
+  `block_on_token_leakage`, `block_on_memory_poisoning` and `block_on_denial_of_wallet`
+  to `true`. **This is a behaviour change for anyone running those two presets:** tool
+  calls matching those detections were previously audited and then forwarded, and are now
+  denied. Global defaults are unchanged — all four still default to `false`, because the
+  detections shipped with no gate at all and defaulting them on would change what every
+  existing deployment does.
+
+  The concrete reason is a claim `fortress.toml` was already making. Its header promised
+  `[x] Memory poisoning detection (blocking mode)` and its threat model said that detection
+  "catches attempts to manipulate your AI assistant's context" — which describes the MINJA
+  parameter scanner. But only `memory_tracking.block_on_match` was enabled, and that is a
+  different detector: it fingerprints response data replayed into a later tool call. The
+  gate fortress's own description promised was off. Its header now names each of the five
+  detections separately rather than collapsing two different mechanisms into one line.
+
+  `sandworm-hardened.toml` deliberately does **not** enable `memory_tracking`, and says so
+  in place rather than leaving the omission to be read as an oversight: that tracker flags
+  any response string of 20+ characters reappearing verbatim in a later tool call, so on a
+  coding assistant — that preset's entire threat model — reading a file and writing it back
+  trips it.
+
+  Two tests pin the intent, where previously nothing asserted anything about
+  `config.governance` for any preset: the hardening presets must have all four gates on,
+  and every other preset must have them off, so heuristic denial cannot creep across the
+  catalogue. Both read **both** preset directories.
+
 - **CI now enforces the reason the `libsqlite3-sys` advisory is suppressed.** The ignore of
   `RUSTSEC-2026-0459` in `.cargo/audit.toml` rests on one condition: the crate reaches
   `Cargo.lock` through `sqlx-sqlite`, but sqlx's `sqlite` feature is never enabled, so the

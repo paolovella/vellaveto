@@ -190,3 +190,86 @@ fn embedded_preset_directory_holds_every_preset_examples_does() {
          vellaveto-proxy/presets: {missing:?}"
     );
 }
+
+/// The hardening presets must enable the four governance denial gates.
+///
+/// Those gates default to `false` globally — they shipped without a gate at all,
+/// so defaulting them on would change what every existing deployment does. A
+/// preset named for hardening is where they belong, and until now no test
+/// asserted anything about `config.governance` for any preset, so the intent was
+/// carried only by the TOML.
+///
+/// Checked in BOTH directories, so the two copies cannot drift: a gate removed
+/// from the shipped copy alone would otherwise pass unnoticed, which is exactly
+/// how `op = "exact"` survived in `devops-agent`.
+#[test]
+fn hardening_presets_enable_the_governance_denial_gates() {
+    let mut failures: Vec<String> = Vec::new();
+
+    for (label, dir) in preset_dirs() {
+        for preset in ["fortress.toml", "sandworm-hardened.toml"] {
+            let path = dir.join(preset);
+            let config = PolicyConfig::load_file(&path.to_string_lossy())
+                .unwrap_or_else(|e| panic!("[{label}] {preset} should load: {e}"));
+            let g = &config.governance;
+
+            for (name, on) in [
+                ("block_on_jailbreak", g.block_on_jailbreak),
+                ("block_on_token_leakage", g.block_on_token_leakage),
+                ("block_on_memory_poisoning", g.block_on_memory_poisoning),
+                ("block_on_denial_of_wallet", g.block_on_denial_of_wallet),
+            ] {
+                if !on {
+                    failures.push(format!("[{label}] {preset}: {name} is not enabled"));
+                }
+            }
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "a hardening preset that does not enable available hardening is the gap this \
+         closes:\n  {}",
+        failures.join("\n  ")
+    );
+}
+
+/// The non-hardening presets must NOT enable them.
+///
+/// The gates are heuristic — jailbreak phrasing and call-rate patterns can
+/// false-positive — so turning them on is a deliberate choice for presets whose
+/// name promises it, not a default that creeps across the whole catalogue.
+#[test]
+fn ordinary_presets_leave_the_governance_denial_gates_off() {
+    let hardening = ["fortress.toml", "sandworm-hardened.toml"];
+    let mut unexpected: Vec<String> = Vec::new();
+
+    for (label, dir) in preset_dirs() {
+        for path in preset_files_in(&dir) {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("<non-utf8>")
+                .to_string();
+            if hardening.contains(&name.as_str()) {
+                continue;
+            }
+            let config = PolicyConfig::load_file(&path.to_string_lossy())
+                .unwrap_or_else(|e| panic!("[{label}] {name} should load: {e}"));
+            let g = &config.governance;
+            if g.block_on_jailbreak
+                || g.block_on_token_leakage
+                || g.block_on_memory_poisoning
+                || g.block_on_denial_of_wallet
+            {
+                unexpected.push(format!("[{label}] {name}"));
+            }
+        }
+    }
+
+    assert!(
+        unexpected.is_empty(),
+        "these presets are not named for hardening but enable heuristic denial gates:\n  {}",
+        unexpected.join("\n  ")
+    );
+}
