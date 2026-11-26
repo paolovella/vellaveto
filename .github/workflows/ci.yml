@@ -184,6 +184,28 @@ jobs:
             exit 1
           fi
 
+      # The suppression of RUSTSEC-2026-0459 (CVE-2026-119375, bundled C SQLite) in
+      # .cargo/audit.toml rests on one condition: `libsqlite3-sys` reaches Cargo.lock
+      # through `sqlx-sqlite`, but sqlx's `sqlite` feature is never enabled, so the
+      # vulnerable C is never compiled or shipped. Nothing checked that the condition
+      # still held -- the README said so in as many words -- which made the
+      # justification able to go stale silently. This is that check.
+      #
+      # Note the signal. `cargo tree -i` under `--all-features --target all` exits 0
+      # and prints "nothing to print" when the crate is absent, so the exit status
+      # cannot distinguish absent from present; the output has to be inspected. The
+      # default-feature form exits 101 with "did not match any packages" instead.
+      # Same shape as the zk-audit guard above.
+      - name: Guard the libsqlite3-sys advisory suppression still applies
+        run: |
+          set -euo pipefail
+          out="$(cargo tree -i libsqlite3-sys --all-features --target all 2>&1 || true)"
+          if printf '%s' "$out" | grep -qE '^libsqlite3-sys'; then
+            echo "::error::libsqlite3-sys is now in the compiled dependency graph, so the suppression of RUSTSEC-2026-0459 in .cargo/audit.toml no longer holds. Either drop the ignore and address the advisory, or re-establish that sqlx's sqlite feature is off."
+            printf '%s\n' "$out"
+            exit 1
+          fi
+
       - name: Check
         run: cargo check --workspace --all-targets --locked
 

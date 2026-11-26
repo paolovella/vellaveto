@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **CI now enforces the reason the `libsqlite3-sys` advisory is suppressed.** The ignore of
+  `RUSTSEC-2026-0459` in `.cargo/audit.toml` rests on one condition: the crate reaches
+  `Cargo.lock` through `sqlx-sqlite`, but sqlx's `sqlite` feature is never enabled, so the
+  vulnerable bundled C is never compiled. Nothing checked that the condition still held —
+  the README said as much in as many words — which left the justification able to go stale
+  silently. A new `ci.yml` step fails the job if the crate ever enters the compiled graph.
+
+  Verified in both directions, because a guard that only ever passes proves nothing: it
+  passes as things stand, and with sqlx's `sqlite` feature switched on it exits 1 and prints
+  the dependency path (`libsqlite3-sys v0.30.1 └── sqlx-sqlite └── sqlx`).
+
+  The signal needed care. `cargo tree -i` under `--all-features --target all` prints
+  *"nothing to print"* and **exits 0** whether or not the crate is present, so the exit
+  status cannot distinguish the two and the output has to be inspected. Only the
+  default-feature form exits 101 with *"did not match any packages"*. The README had
+  attributed the latter message to the former command — so a guard written around the exit
+  status of the command the README named would have passed unconditionally.
+
+- **Corrected two false claims about when the security gates run.** The README said "The
+  security gates do not run on push" and that "a regression that reaches `main` can
+  therefore go unflagged for up to a week". Both halves were wrong.
+
+  `ci.yml` runs on every push to `main` and every pull request, and two of its jobs are
+  advisory gates: **Security Audit** runs `cargo audit` across the workspace trees and fails
+  on a vulnerability, and **Supply Chain Audit (cargo-vet)** fails on an unvetted version.
+  Neither carries an `if:` condition. So an advisory introduced *by a change* fails CI on
+  the pull request and again on the merge commit — it does not sit for a week.
+
+  The real gap is narrower and is now stated as such: an advisory **published against code
+  that has not changed** triggers no push, so nothing re-runs until the next scheduled job,
+  and this repository's scheduled workflows fire 7–8 hours after their declared cron.
+  `RUSTSEC-2026-0600` is the worked example — published after the last merge, so the daily
+  `dependency-monitor` was what went red, about a day later.
+
+  Also corrected: the claim that all four gates run on pull requests. `dependency-monitor`
+  has **no `pull_request` trigger at all**, and `supply-chain-scan`'s is **path-filtered**
+  to lockfiles, manifests and workflow files. Pull-request advisory coverage comes from
+  `RustSec Audit`, `Security Audit`, `cargo-deny policy checks` and `Supply Chain Audit
+  (cargo-vet)` instead — which is why adding `dependency-monitor` to pull requests would
+  mostly duplicate work already done.
+
+  Both closed gaps are removed from the Roadmap rather than left listed.
+
+- **Investigated and dismissed a cleanup I had flagged.** The `unmatched-skip` and
+  `unnecessary-skip` warnings `cargo-deny` prints on every run are not stale `deny.toml`
+  entries. The root tree emits **zero** of them; all eight come from the
+  `packages/vellaveto-desktop/src-tauri` tree, which shares the root `deny.toml` and has a
+  smaller dependency graph. `scripts/run-dependency-monitor.sh` already documents this and
+  the deliberate choice not to silence it — `unused-allowed-license = "allow"` would blind
+  the check for every license and every tree. Nothing to clean; recorded so the next person
+  does not delete entries the root tree depends on.
+
 - **Cleared RUSTSEC-2026-0600 (`kube-client`), which had turned `dependency-monitor` red on
   `main`.** The `openssl-tls` connector started from OpenSSL's default verify paths and
   *added* the configured cluster CA to that store, so setting `certificate-authority` did
