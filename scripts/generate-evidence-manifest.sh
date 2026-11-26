@@ -15,8 +15,25 @@ CHECK_ONLY=0
 SYNC=0
 
 # Docs carrying the generated block. --check verifies these; --sync writes them.
-# One list so the two directions can never disagree about which files matter.
-EVIDENCE_DOCS=(README.md docs/ASSURANCE_CASE.md formal/README.md)
+# Read from scripts/evidence-docs.txt so this script and check-claim-anchors.sh
+# cannot disagree about which files matter. Resolved from BASH_SOURCE because
+# this runs before the cd to the project root below.
+EVIDENCE_DOCS_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/evidence-docs.txt"
+if [ ! -f "$EVIDENCE_DOCS_FILE" ]; then
+    echo "FAIL: missing $EVIDENCE_DOCS_FILE" >&2
+    exit 1
+fi
+EVIDENCE_DOCS=()
+while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    EVIDENCE_DOCS+=("$line")
+done < "$EVIDENCE_DOCS_FILE"
+# A list that silently came back empty would make every check below pass by
+# iterating nothing -- the exact way a guard goes blind.
+if [ "${#EVIDENCE_DOCS[@]}" -eq 0 ]; then
+    echo "FAIL: $EVIDENCE_DOCS_FILE lists no docs" >&2
+    exit 1
+fi
 
 while [ "$#" -gt 0 ]; do
     case "$1" in

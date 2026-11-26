@@ -1,0 +1,17 @@
+# Docs that carry the generated VELLAVETO:EVIDENCE block.
+#
+# Single source of truth, read by BOTH scripts/generate-evidence-manifest.sh
+# (which writes and verifies the blocks) and scripts/check-claim-anchors.sh
+# (which verifies the markers are present). The list used to be duplicated in
+# the two scripts, which is the same drift shape this evidence machinery exists
+# to prevent: two copies with nothing forcing them together.
+#
+# One path per line, relative to the repository root. Blank lines and lines
+# starting with # are ignored. A file listed here must contain
+# <!-- VELLAVETO:EVIDENCE:START --> and <!-- VELLAVETO:EVIDENCE:END -->, and
+# must not restate generated counts in its own prose.
+README.md
+docs/ASSURANCE_CASE.md
+formal/README.md
+docs/SECURITY_REVIEW.md
+docs/FORMAL_SCOPE.md
