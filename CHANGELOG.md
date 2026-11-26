@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The extended evidence guard never ran on the two docs it was added to guard.** The
+  previous entry added `docs/SECURITY_REVIEW.md` and `docs/FORMAL_SCOPE.md` to
+  `scripts/evidence-docs.txt`, so `make claim-check` verifies their generated blocks. But
+  `.github/workflows/evidence.yml` fires on a `paths` **allowlist**, and neither file was on
+  it — nor was `scripts/evidence-docs.txt` itself. A pull request editing only
+  `docs/SECURITY_REVIEW.md`, hand-writing a count straight back into the block, would have
+  run no evidence job at all.
+
+  It looked fine only because the change that added the guard also touched `README.md` and
+  `scripts/`, which are on the list. The guard was shipped half-wired: checking the right
+  files, triggered by the wrong ones.
+
+  Found by asking why a Markdown-only pull request ran 13 checks instead of forty —
+  `ci.yml`'s `paths-ignore` covers `**/*.md`, which is correct for prose, but it made the
+  narrower hole in `evidence.yml` visible.
+
+  Fixed in two parts. The three missing paths are added under both the `push` and
+  `pull_request` triggers, which are separate literals in that file. And
+  `check-claim-anchors.sh` now asserts that every doc in `scripts/evidence-docs.txt` is
+  reachable from `evidence.yml`'s `paths` — present verbatim, or matched by a `dir/**` entry
+  — failing by name otherwise. The workflow cannot read that list at trigger time, so the
+  two lists must stay separate; this makes them fail loudly when they disagree instead of
+  going quietly blind.
+
+  The extraction guards itself: if no trigger paths parse out of the YAML, it fails rather
+  than compare against an empty list. That case is asserted because the first attempt at
+  this very cross-check made exactly that mistake — a `formal/**` branch in a regex
+  alternation matched every doc, and the check reported all five covered while the trigger
+  list plainly showed two were not.
+
+  Verified by mutation: removing either doc from the workflow paths fails naming that doc,
+  removing both names both rather than stopping at the first, and breaking the YAML
+  extraction fails loudly. Two further mutations using a brand-new doc were **inconclusive
+  rather than passing** — they tripped the marker and block-sync checks first and never
+  reached the new logic, so they are not evidence of anything.
+
 - **`CLAUDE.md` broke its own rule against restating counts, and they had gone stale.**
   Line 6 of that file says: *"Do not restate test or proof counts here — they go stale
   silently and become a credibility problem."* The file restated them throughout. The
