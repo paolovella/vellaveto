@@ -65,6 +65,58 @@ for doc in "${public_evidence_docs[@]}"; do
     require_pattern "$doc" '<!-- VELLAVETO:EVIDENCE:END -->' "generated evidence block end marker"
 done
 
+# Every doc the guard checks must be able to TRIGGER the guard.
+#
+# .github/workflows/evidence.yml fires on a paths allowlist, not an ignore list,
+# so a doc missing from that list is simply never checked by CI: a PR editing
+# only that file runs no evidence job at all. This was a live hole -- the two
+# docs added to evidence-docs.txt were checked by `make claim-check` but absent
+# from the workflow triggers, so the guard did not run on the files it was added
+# to protect. It only looked fine because the PR that added it also touched
+# README.md and scripts/, which are on the list.
+#
+# The workflow cannot read evidence-docs.txt at trigger time, so the two lists
+# are necessarily separate. This makes them fail loudly when they disagree
+# instead of silently going blind.
+evidence_workflow="$PROJECT_DIR/.github/workflows/evidence.yml"
+if [ ! -f "$evidence_workflow" ]; then
+    fail "missing $evidence_workflow"
+else
+    trigger_paths=()
+    while IFS= read -r tp; do
+        [ -n "$tp" ] && trigger_paths+=("$tp")
+    done < <(sed -n 's/^[[:space:]]*-[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$evidence_workflow")
+
+    # An extraction that yields nothing would make every check below pass by
+    # comparing against an empty list -- the exact way a guard goes blind. This
+    # script's own first attempt at this comparison did that, so it is asserted.
+    if [ "${#trigger_paths[@]}" -eq 0 ]; then
+        fail "parsed no trigger paths out of $evidence_workflow (did its structure change?)"
+    else
+        for doc in "${public_evidence_docs[@]}"; do
+            covered=0
+            for tp in "${trigger_paths[@]}"; do
+                if [ "$tp" = "$doc" ]; then
+                    covered=1
+                    break
+                fi
+                # A "dir/**" entry covers anything beneath dir/.
+                case "$tp" in
+                    */'**')
+                        if [ "${doc#"${tp%'**'}"}" != "$doc" ]; then
+                            covered=1
+                            break
+                        fi
+                        ;;
+                esac
+            done
+            if [ "$covered" -eq 0 ]; then
+                fail "$doc is checked via scripts/evidence-docs.txt but is not in evidence.yml's paths, so editing it alone runs no evidence job"
+            fi
+        done
+    fi
+fi
+
 claim_count="$(count_pattern '^### C[0-9]+\.' docs/ASSURANCE_CASE.md)"
 scope_count="$(count_pattern '\| \*\*Scope\*\* \|' docs/ASSURANCE_CASE.md)"
 reproduce_count="$(count_pattern '\| \*\*Reproduce\*\* \|' docs/ASSURANCE_CASE.md)"
