@@ -9,6 +9,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`CLAUDE.md` broke its own rule against restating counts, and they had gone stale.**
+  Line 6 of that file says: *"Do not restate test or proof counts here — they go stale
+  silently and become a credibility problem."* The file restated them throughout. The
+  sharpest instance was the formal-verification summary, which opened *"(counts live in the
+  generated evidence block in README.md — do not restate them here)"* and then restated four
+  of them in the same sentence.
+
+  What was wrong, all verified against the tree:
+
+  - **Four different audit-round totals in one document** — 267, 254, 246 and 226 — with no
+    way for a reader to tell which was current.
+  - **A verbatim duplicated paragraph.** The whole "Adversarial hardening" block appeared
+    twice, byte for byte.
+  - **Formal figures understated by up to 10x:** Verus "668 verified items" against 1046,
+    Kani "108 CBMC proof harnesses" against 124, and TLA+ "14 specs in CI" against 13 — that
+    last one overstating.
+  - **Test totals** of "11,571+ Rust tests, 556+ SDK tests" and "10,990+ tests" against
+    13,116 and 977.
+  - **Eight per-crate test counts** in the file-locations table (`Tests (~196)`, `(~421)`,
+    `(~301)`, …) that no check verified.
+  - `Policy preset templates (12)` where there are **18** — contradicting the same file,
+    which said 18 four lines later.
+  - `SPDX license headers on all 211 .rs files` where the CI step covers `vellaveto-*/src/`,
+    which is **492** files (all of them with headers — the "all" and "CI-enforced" held).
+  - `dynamic analysis CI (5 fuzz targets × 30s weekly)` where `fuzz-ci.yml`'s matrix has
+    **24** targets and triggers on **push and** weekly — wrong on the count and on when it
+    runs.
+  - `MCPSEC now covers 105 tests across 16 attack classes` where `README.md` says **116
+    across 17**.
+
+  **Historical figures are kept; current-inventory figures are gone.** That distinction is
+  the whole basis of the edit: "R231 found 21 findings and added 49 new tests" records what
+  one past round did and stays true, while "267 audit rounds" and "Tests (~421)" assert the
+  present state of the tree and rot the moment it moves. Counts describing a *design* — how
+  many roles RBAC has, how many CRDs the operator defines — are not inventory and were left
+  alone. Where a figure carried real information it was replaced with the qualitative claim
+  rather than a fresh number, so the fuzz line now names the matrix instead of swapping 5 for
+  24 and restarting the clock.
+
+  The header rule now covers audit-round counts explicitly, says `CHANGELOG.md` is where
+  per-round detail belongs, and records that this drift happened — a rule that has already
+  been broken once reads differently from one that has not.
+
+  Unlike the docs fixed alongside this, `CLAUDE.md`'s prose cannot carry the generated
+  evidence block, so **nothing in CI stops counts creeping back in.** Removing them and
+  pointing at the generated block is the only durable move available here; it is not an
+  enforced guarantee.
+
 - **`docs/SECURITY_REVIEW.md` and `docs/FORMAL_SCOPE.md` had stale proof counts; both are
   now generated and CI-enforced.** `CLAUDE.md` names the generated block in `README.md` as
   the single source of truth for test and proof counts, precisely because hand-written
