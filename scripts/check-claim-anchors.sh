@@ -43,11 +43,22 @@ require_pattern() {
     fi
 }
 
-public_evidence_docs=(
-    README.md
-    docs/ASSURANCE_CASE.md
-    formal/README.md
-)
+# Read from scripts/evidence-docs.txt -- the same list the generator uses, so
+# the two cannot drift. Resolved from BASH_SOURCE, not the cwd.
+evidence_docs_file="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/evidence-docs.txt"
+if [ ! -f "$evidence_docs_file" ]; then
+    fail "missing $evidence_docs_file"
+    exit 1
+fi
+public_evidence_docs=()
+while IFS= read -r line; do
+    case "$line" in ''|'#'*) continue ;; esac
+    public_evidence_docs+=("$line")
+done < "$evidence_docs_file"
+if [ "${#public_evidence_docs[@]}" -eq 0 ]; then
+    fail "$evidence_docs_file lists no docs"
+    exit 1
+fi
 
 for doc in "${public_evidence_docs[@]}"; do
     require_pattern "$doc" '<!-- VELLAVETO:EVIDENCE:START -->' "generated evidence block start marker"

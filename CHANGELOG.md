@@ -9,6 +9,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`docs/SECURITY_REVIEW.md` and `docs/FORMAL_SCOPE.md` had stale proof counts; both are
+  now generated and CI-enforced.** `CLAUDE.md` names the generated block in `README.md` as
+  the single source of truth for test and proof counts, precisely because hand-written
+  totals "go stale silently and become a credibility problem". These two documents restated
+  them anyway, and had drifted in **both** directions:
+
+  | Claim | Actual | |
+  |---|---:|---|
+  | `SECURITY_REVIEW.md` "882+ verification instances" | 1270 | understated |
+  | `SECURITY_REVIEW.md` Verus "668 verified items" | 1046 | understated |
+  | `SECURITY_REVIEW.md` Kani "108 CBMC proof harnesses" | 124 | understated |
+  | `SECURITY_REVIEW.md` TLA+ "14 specs" | 13 | **overstated** |
+  | `SECURITY_REVIEW.md` Lean 4 "37 theorems" | 32 | **overstated** |
+  | `FORMAL_SCOPE.md` TLA+ "6 specifications" | 13 | understated |
+  | `FORMAL_SCOPE.md` Kani "9 harnesses" (twice) | 124 | understated |
+  | `FORMAL_SCOPE.md` Verus "9 proofs" | 1046 | understated |
+  | `FORMAL_SCOPE.md` "882+ ... across 6 tools" tally | 1270 | understated |
+
+  The two overstatements are the ones that matter: a security review document crediting a
+  TLA+ specification and five Lean theorems that do not exist. The TLA+ figure of 13 was
+  confirmed independently of the manifest — the generator counts `.cfg` files under
+  `formal/tla` (26 `.tla` files exist, 13 are model-checked), and CI runs exactly 13 `TLA+
+  Model Checking` jobs.
+
+  Both documents now carry the generated `VELLAVETO:EVIDENCE` block and no hand-written
+  inventory figures. Counts came out of five section headings and five CI-table rows rather
+  than being corrected in place, so there is nothing left to go stale.
+
+- **Fixed a false claim that Alloy is not in CI.** `docs/FORMAL_SCOPE.md`'s CI coverage table
+  listed Alloy as `Local only | Requires Alloy Analyzer JAR`. It has a CI job —
+  `.github/workflows/formal-verification.yml:222` runs `formal/alloy/CapabilityDelegation.als`
+  against a version-pinned, SHA-256-verified Analyzer JAR. This one understated the
+  project's own assurance rather than overstating it, but it was still wrong.
+
+- **The list of evidence-carrying docs was duplicated across two scripts.** `EVIDENCE_DOCS`
+  in `scripts/generate-evidence-manifest.sh` and `public_evidence_docs` in
+  `scripts/check-claim-anchors.sh` were separate literals that had to be kept in step by
+  hand — the same drift shape this machinery exists to prevent. Both now read
+  `scripts/evidence-docs.txt`, resolved from `BASH_SOURCE` rather than the working
+  directory, and both fail loudly if that file is missing or lists nothing, since a guard
+  that iterates an empty list passes by doing nothing.
+
+  Verified by mutation, because a guard that only ever passes proves nothing: editing a
+  count inside either new block, deleting a block's markers, and emptying the shared list
+  each fail `make claim-check` naming the exact file.
+
 - **The two preset directories are now byte-identical, and a test enforces it.**
   `vellaveto-proxy/presets/` is what ships (embedded via `include_str!`);
   `examples/presets/` is what `scripts/install.sh` prints

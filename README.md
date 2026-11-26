@@ -714,7 +714,6 @@ check is tracked in [docs/BOUNDARY_INVENTORY.md](docs/BOUNDARY_INVENTORY.md) Sec
 | Gap | Why it matters |
 |---|---|
 | Migrate off `chrono` | RUSTSEC-2026-0543 marks it unmaintained, with no fixed version — 0.4.45 is the latest release. It is a direct workspace dependency of ten crates plus transitive via `sqlx-core`, so replacing it with `time` or `jiff` is a real refactor. Reported as a non-blocking warning meanwhile. |
-| Count drift guards for the remaining docs | `docs/FORMAL_SCOPE.md` and `docs/SECURITY_REVIEW.md` still restate totals by hand; only the README's generated block is CI-enforced. |
 
 ### Product phases
 
