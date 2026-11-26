@@ -224,3 +224,56 @@ redaction_level = "KeysAndPatterns"
 block_tainted_privileged_sinks = true
 require_lineage_for_privileged_sinks = true
 containment_mode = "quarantine"
+
+# --- Source trust classification (Phase 6 channel separation) ---
+# Which tools produce untrusted content, how sinks are classified, and which
+# sinks this preset's agents may reach at all. `source_trust.untrusted_tools` is
+# what gives the [acis] tainted-sink guard above something to act on: with it
+# empty, no tool output is marked untrusted and that guard never fires on this
+# preset's own classification. Explicit `sink_classification.rules` replace the
+# heuristic classifier, which stays as the fallback for tools no rule matches.
+[source_trust]
+default_tool_trust = "untrusted"
+untrusted_tools = ["fetch_url", "fetch", "browse_*", "search_*", "scrape_*", "http_*", "curl_*", "wget_*"]
+
+[[sink_classification.rules]]
+tool_pattern = "execute_*"
+sink_class = "code_execution"
+
+[[sink_classification.rules]]
+tool_pattern = "run_*"
+sink_class = "code_execution"
+
+[[sink_classification.rules]]
+tool_pattern = "bash"
+sink_class = "code_execution"
+
+[[sink_classification.rules]]
+tool_pattern = "shell"
+sink_class = "code_execution"
+
+[[sink_classification.rules]]
+tool_pattern = "write_*"
+sink_class = "filesystem_write"
+
+[[sink_classification.rules]]
+tool_pattern = "delete_*"
+sink_class = "filesystem_write"
+
+[[sink_classification.rules]]
+tool_pattern = "read_*"
+sink_class = "read_only"
+
+[[sink_classification.rules]]
+tool_pattern = "list_*"
+sink_class = "read_only"
+
+[[sink_classification.rules]]
+tool_pattern = "get_*"
+sink_class = "read_only"
+
+[intent_scope]
+allowed_sink_classes = ["read_only"]
+denied_tools = ["execute_*", "run_*", "bash", "shell"]
+out_of_scope_action = "Deny"
+max_distinct_tools = 5

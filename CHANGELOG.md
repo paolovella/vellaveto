@@ -9,6 +9,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The two preset directories are now byte-identical, and a test enforces it.**
+  `vellaveto-proxy/presets/` is what ships (embedded via `include_str!`);
+  `examples/presets/` is what `scripts/install.sh` prints
+  (`vellaveto serve --config examples/presets/shield.toml`), what the signup response in
+  `vellaveto-server/src/routes/signup.rs` points at for templates, and what some presets
+  give as their own usage line. Both are user-facing. Nothing kept them in step and six had
+  diverged — `consumer-shield`, `dev-laptop`, `fortress`, `sandworm-hardened`, `shield` and
+  `vault` — with the `examples/` copy missing `[source_trust]`,
+  `[[sink_classification.rules]]` and, for three of them, `[intent_scope]`. So the copy the
+  installer recommends enforced less than `--preset <name>`, with no error to show it.
+
+  **The enforcement delta, measured rather than assumed.** It concentrated in two settings,
+  not the three missing tables evenly:
+
+  - `source_trust.untrusted_tools` defaults to **empty**, so no tool output was classified
+    untrusted and the `[acis]` tainted-privileged-sink guard — which these presets enable —
+    had nothing of the preset's own classification to fire on.
+  - `intent_scope` is `Option<IntentScopeConfig>`, so an absent table is `None`, not a
+    defaulted struct: no allowed-sink-class restriction, no denied tools, no tool-count cap.
+    For `sandworm-hardened` that meant losing `allowed_sink_classes = ["read_only"]`,
+    `max_distinct_tools = 5` and `out_of_scope_action = "Deny"`.
+  - `sink_classification` was the milder case: `fallback_to_heuristic` defaults to `true`, so
+    sinks were still classified, just heuristically instead of by the preset's explicit
+    rules. An earlier note describing this as a missing capability overstated it.
+  - `default_tool_trust` was a no-op difference for four of the five, since the value they
+    set (`"unknown"`) is already the default; only `sandworm-hardened` set `"untrusted"`.
+
+  **Neither copy was correct to adopt wholesale.** The shipped copies carried the
+  configuration but had the Phase 6 tables inserted crudely: in `fortress` the insertion
+  orphaned the `# --- Audit ---` header, took over the `[acis]` label and displaced `[audit]`
+  to the end of the file, and the five differed in where the block landed. The `examples/`
+  copies were well-ordered and fully labelled but lacked the tables, and `consumer-shield`'s
+  copy carried fuller, more accurate comments than the shipped one — which an earlier
+  attempt at a one-way sync deleted. The reconciled files take the `examples/` structure, the
+  shipped configuration, and the better comments in both places.
+
+  The guard this replaces compared **filenames** across the two directories and so could not
+  catch any of it: every file was present and only the contents differed. The new check
+  compares bytes, and subsumes the filename check. Alongside it, a second test pins
+  `sandworm-hardened`'s channel-separation settings **by name**, because a byte comparison
+  proves the two files agree and not that they agree on something correct — verified by
+  mutating `max_distinct_tools` in both copies at once, which the byte guard accepts and the
+  named test rejects.
+
 - **The two hardening presets now enforce the four governance denial gates.**
   `fortress.toml` and `sandworm-hardened.toml` set `governance.block_on_jailbreak`,
   `block_on_token_leakage`, `block_on_memory_poisoning` and `block_on_denial_of_wallet`
