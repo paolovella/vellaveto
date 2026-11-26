@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Cleared RUSTSEC-2026-0600 (`kube-client`), which had turned `dependency-monitor` red on
+  `main`.** The `openssl-tls` connector started from OpenSSL's default verify paths and
+  *added* the configured cluster CA to that store, so setting `certificate-authority` did
+  not limit which server certificates were trusted. An attacker on the path — a
+  TLS-inspection proxy whose root is installed on the machine, for instance — could
+  complete the handshake and receive the client's requests, including bearer tokens.
+
+  `kube 4.2.0` pins `kube-client = "=4.2.0"` exactly, so the parent had to move: the bump is
+  `kube` 4.2.0 → 4.2.1, carrying `kube-client`, `-core`, `-derive` and `-runtime` with it.
+  Five crates in the lockfile, nothing else. The declared floor in
+  `vellaveto-operator/Cargo.toml` is raised to 4.2.1 as well, so a fresh resolve cannot
+  select the vulnerable version again.
+
+  **Reachability, for the record rather than as an excuse:** the vulnerable connector was
+  never compiled here. `vellaveto-operator` enables only `["runtime", "derive", "client"]`,
+  `kube-client` resolves to `hyper-rustls`/`rustls`/`rustls-platform-verifier`, and the
+  lockfile contains no `openssl` or `openssl-sys` entry at all (`openssl-probe` is just a
+  CA-path prober). Since kube 0.86.0 `rustls-tls` is the default and takes precedence. The
+  fix is a published patch release, so the advisory is cleared by bumping rather than
+  suppressed — suppression is for advisories with no fix, and costs more to justify than
+  this bump cost to take.
+
+  As expected, `cargo vet`'s exact-version exemptions broke on the bump and were re-pointed;
+  the exemption count holds at 649, with none added or lost. After the change: `cargo audit`
+  exits 0 with only the known non-blocking `chrono` unmaintained warning, `cargo deny`
+  reports `advisories ok`, and the dependency monitor reports 5/5.
+
+- **Triaged the repository's code-scanning alerts.** Of the four reported by the OpenSSF
+  Scorecard analysis, exactly one is addressable in code and is the item above:
+  `VulnerabilitiesID` listed 11 OSV advisories, a snapshot taken before the previous
+  release's fixes landed. On current `main` the Rust graph is down to zero vulnerabilities.
+
+  Worth recording so nobody chases it: **that score will stay 0 regardless.** Scorecard
+  counts advisories we deliberately suppress with written justification — `RUSTSEC-2023-0071`
+  (rsa), `RUSTSEC-2024-0388` (derivative, opt-in `zk-audit` only, with a CI guard) and
+  `RUSTSEC-2026-0459` (libsqlite3-sys, never compiled) — plus the `chrono` unmaintained
+  warning and advisories in the Tauri desktop lockfile. A clean `cargo audit` and a zero
+  Scorecard vulnerability score are not the same measurement.
+
+  The other three alerts are repository settings and process, not code, and cannot be fixed
+  from a pull request: `BranchProtectionID` (no branch protection on development/release
+  branches), `CodeReviewID` (0 of 18 changesets approved) and `CIIBestPracticesID` (badge
+  still `InProgress`). They need the repository owner.
+
+  **Limit of this triage, stated plainly:** CodeQL's own alerts could not be enumerated.
+  Both `code-scanning/alerts` and `code-scanning/analyses` return 403 to this session's
+  token, CodeQL uploads its SARIF straight to the API rather than as a downloadable
+  artifact, and no CodeQL CLI is available here. So this covers the Scorecard analysis only;
+  whether CodeQL has open alerts of its own is unverified and remains to be checked by
+  someone who can read the security tab.
+
 - **`--preset devops-agent` could not start, and the test written to prevent that was
   watching the wrong directory.** The shipped preset carried `op = "exact"`, which is not a
   constraint operator; `policy_compile.rs` rejects it, so the proxy exited at startup.
