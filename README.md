@@ -516,13 +516,24 @@ are hedged the way they are.
   first-party audits**; all **650** dependency entries are *exemptions* pinned to an exact
   version. What the gate actually enforces is that a new version must be re-blessed
   deliberately — nobody has reviewed those crates' source.
-- **One advisory is suppressed.** `RUSTSEC-2026-0459` (CVE-2026-119375, 6.8 medium, bundled C
-  SQLite) is ignored in `.cargo/audit.toml`, because `libsqlite3-sys` reaches `Cargo.lock`
-  via `sqlx-sqlite` while only `sqlx`'s Postgres features are enabled. Checkable rather than
-  asserted: `cargo tree -i libsqlite3-sys --all-features --target all` reports *"did not match
-  any packages"*, so the vulnerable C is never compiled or shipped. The two older entries in
-  that file are suppressed on the same grounds. If `sqlx`'s `sqlite` feature is ever enabled,
-  that justification silently stops holding and **nothing currently detects it**.
+- **One advisory is suppressed, and CI now enforces the reason.** `RUSTSEC-2026-0459`
+  (CVE-2026-119375, 6.8 medium, bundled C SQLite) is ignored in `.cargo/audit.toml`, because
+  `libsqlite3-sys` reaches `Cargo.lock` via `sqlx-sqlite` while only `sqlx`'s Postgres
+  features are enabled, so the vulnerable C is never compiled or shipped. The two older
+  entries in that file are suppressed on the same grounds.
+
+  This used to end "nothing currently detects it", which was true and is no longer: the
+  `Guard the libsqlite3-sys advisory suppression still applies` step in `ci.yml` fails the
+  job if the crate ever enters the compiled graph. It was verified in both directions —
+  passing as things stand, and failing with the dependency path printed when `sqlx`'s
+  `sqlite` feature is switched on.
+
+  One correction while checking: this bullet previously claimed
+  `cargo tree -i libsqlite3-sys --all-features --target all` reports *"did not match any
+  packages"*. It does not — that form prints *"nothing to print"* and **exits 0**, whether
+  or not the crate is there. The *"did not match any packages"* message (exit 101) comes
+  from the default-feature form. The distinction matters: a guard written around the exit
+  status of the command this bullet named would have passed unconditionally.
 - **One npm advisory is suppressed with an expiry.** `GHSA-fc5q-39xc-vjpf`
   (CVE-2026-112366, high, picomatch ReDoS) is ignored in `site/osv-scanner.toml`. There is
   no fix to take: 4.0.7 is the latest version picomatch has published and the advisory
@@ -568,10 +579,33 @@ are hedged the way they are.
   `sandworm-hardened.toml` leave all four at their default `false`, so choosing the most
   hardened preset does not turn on the hardening that exists. `block_tool_drift`, the
   governance gate these follow, is absent from every preset too.
-- **The security gates do not run on push.** `dependency-monitor` is daily,
-  `supply-chain-scan` is daily, and `security-audit` and `cargo-deny` are weekly (Mondays);
-  all four also run on pull requests. A regression that reaches `main` can therefore go
-  unflagged for up to a week.
+- **A newly published advisory is only caught by the scheduled runs.** This is the real
+  gap, and it is narrower than the claim that used to stand here — which said the gates do
+  not run on push and that a regression reaching `main` could go unflagged for a week. Both
+  halves were wrong, and verified so rather than assumed:
+
+  `ci.yml` runs on every push to `main` and on every pull request (`paths-ignore` skips
+  docs-, site-, sdk-, helm- and Markdown-only changes), and two of its jobs are advisory
+  gates: **Security Audit** runs `cargo audit` across the workspace trees and fails the job
+  on a vulnerability, and **Supply Chain Audit (cargo-vet)** fails on an unvetted version.
+  Neither carries an `if:` condition. So an advisory *introduced by a change* — a dependency
+  bump that pulls in a vulnerable crate — fails CI on the pull request and again on the
+  merge commit. It does not sit for a week.
+
+  What the schedule alone catches is the other case: an advisory **published against code
+  that has not changed**. No push happens, so nothing re-runs until the next scheduled job,
+  and this repository's scheduled workflows fire 7–8 hours after their declared cron.
+  `RUSTSEC-2026-0600` (`kube-client`) is a worked example — published after the last merge,
+  so the daily `dependency-monitor` was what turned red, roughly a day later.
+
+  Also corrected: the claim that all four gates run on pull requests. `dependency-monitor`
+  has **no `pull_request` trigger at all** (`schedule` and `workflow_dispatch` only), and
+  `supply-chain-scan`'s pull-request trigger is **path-filtered** to lockfiles, manifests
+  and workflow files. On pull requests the advisory coverage comes from `RustSec Audit`,
+  `Security Audit`, `cargo-deny policy checks` and `Supply Chain Audit (cargo-vet)` — which
+  is why adding `dependency-monitor` to pull requests would mostly duplicate work already
+  done; its unique steps there are the duplicate-dependency baseline and the combined
+  five-step verdict.
 - **Advisories in build and test dependencies are reported, not blocked.**
   `supply-chain-scan` covers the ecosystems cargo does not reach — six npm projects, two Go
   modules, the pinned Python requirements, the Java SDK and the GitHub Actions pinned across
@@ -678,8 +712,6 @@ check is tracked in [docs/BOUNDARY_INVENTORY.md](docs/BOUNDARY_INVENTORY.md) Sec
 
 | Gap | Why it matters |
 |---|---|
-| Guard that `libsqlite3-sys` stays out of the dependency graph | Its advisory suppression is justified only while `sqlx`'s `sqlite` feature is off. Nothing detects that changing, so the justification could silently stop being true. |
-| Security gates on push | They run on schedule and pull request only, so a regression can sit on `main` for up to a week. Scheduled runs are also deferred 7–8 hours past their declared cron by GitHub, so the daily gates trail a push by roughly 31 hours rather than 24. |
 | Migrate off `chrono` | RUSTSEC-2026-0543 marks it unmaintained, with no fixed version — 0.4.45 is the latest release. It is a direct workspace dependency of ten crates plus transitive via `sqlx-core`, so replacing it with `time` or `jiff` is a real refactor. Reported as a non-blocking warning meanwhile. |
 | Count drift guards for the remaining docs | `docs/FORMAL_SCOPE.md` and `docs/SECURITY_REVIEW.md` still restate totals by hand; only the README's generated block is CI-enforced. |
 
