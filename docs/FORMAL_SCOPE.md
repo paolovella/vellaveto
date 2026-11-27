@@ -24,9 +24,9 @@ both understating by an order of magnitude or more. Counts live here only.
 <!-- VELLAVETO:EVIDENCE:START -->
 | Evidence item | Count |
 |---|---:|
-| Rust tests | 13116 |
+| Rust tests | 13121 |
 | SDK tests | 977 |
-| Total tests tracked by manifest | 14093 |
+| Total tests tracked by manifest | 14098 |
 | Verus verified items | 1046 |
 | Kani proof harnesses | 124 |
 | TLA+ specs | 13 |

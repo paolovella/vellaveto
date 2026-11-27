@@ -13,6 +13,7 @@
 //! surrounding context in log entries.
 
 use regex::Regex;
+use std::sync::LazyLock;
 
 /// A custom PII detection pattern provided by the operator.
 ///
@@ -242,6 +243,54 @@ fn all_patterns() -> Vec<NamedPiiRegex> {
         .collect()
 }
 
+/// Canonical UUID form: 8-4-4-4-12 hex digits.
+///
+/// Used to keep the credit-card pattern off identifiers. See
+/// [`is_inside_uuid`] for why that matters.
+static UUID_RE: LazyLock<Option<Regex>> = LazyLock::new(|| {
+    match Regex::new(
+        r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+    ) {
+        Ok(re) => Some(re),
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                "UUID guard regex failed to compile; credit-card matches inside UUIDs will \
+                 be redacted, losing identifier fields from the audit trail"
+            );
+            None
+        }
+    }
+});
+
+/// True when the byte span `[start, end)` lies wholly inside a canonical UUID.
+///
+/// The credit-card pattern is `\b(?:\d[ -]*?){13,19}\b` — 13 to 19 digits with
+/// spaces or hyphens between them — and a UUID's first three groups are 16
+/// characters in a `8-4-4` layout. When those happen to be all decimal digits,
+/// the concatenation is 16 digits and the pattern matches; if it also passes
+/// Luhn, the whole value was replaced with `[REDACTED]`.
+///
+/// That is how `test_audit_entry_contains_resolver_identity` failed on `main`:
+/// the approval id `99259028-5431-4010-b06f-f16bdbccb850` yields
+/// `9925902854314010`, which is Luhn-valid, so the audit entry recorded
+/// `[REDACTED]` where the approval id belonged. Measured over 200,000 random v4
+/// UUIDs, this hits roughly 1 in 8,300 — rare enough to read as a flaky test,
+/// frequent enough that an audit trail silently loses identifier fields.
+///
+/// Containment, not overlap, is the test: a real card number sitting next to a
+/// UUID must still be redacted. A canonical UUID is 32 hex characters in a fixed
+/// hyphen layout, so no genuine 13-to-19 digit card can be contained in one.
+fn is_inside_uuid(input: &str, start: usize, end: usize) -> bool {
+    let Some(re) = UUID_RE.as_ref() else {
+        // Fail closed: without the guard, treat nothing as excluded, so a
+        // suspected card is still redacted.
+        return false;
+    };
+    re.find_iter(input)
+        .any(|u| u.start() <= start && end <= u.end())
+}
+
 /// Luhn check for credit card validation post-filter.
 ///
 /// Returns true if the digit string passes the Luhn algorithm.
@@ -351,12 +400,20 @@ impl PiiScanner {
 
         for named in &self.default_patterns {
             if named.luhn_postfilter {
-                // Credit card pattern — apply Luhn post-filter
+                // Credit card pattern — apply Luhn post-filter.
+                // `haystack` is the pre-replacement text, so the UUID guard sees
+                // the same offsets the regex matched against.
+                let haystack = result.clone();
                 result = named
                     .regex
-                    .replace_all(&result, |caps: &regex::Captures| {
-                        let matched = caps.get(0).map(|m| m.as_str()).unwrap_or("");
-                        if luhn_check(matched) {
+                    .replace_all(&haystack, |caps: &regex::Captures| {
+                        let Some(m) = caps.get(0) else {
+                            return String::new();
+                        };
+                        let matched = m.as_str();
+                        // Luhn alone is not enough: a UUID's leading groups can
+                        // be 16 Luhn-valid digits. See `is_inside_uuid`.
+                        if luhn_check(matched) && !is_inside_uuid(&haystack, m.start(), m.end()) {
                             REDACTED.to_string()
                         } else {
                             matched.to_string()
@@ -400,7 +457,9 @@ impl PiiScanner {
 
         for named in &self.default_patterns {
             for m in named.regex.find_iter(input) {
-                if named.luhn_postfilter && !luhn_check(m.as_str()) {
+                if named.luhn_postfilter
+                    && (!luhn_check(m.as_str()) || is_inside_uuid(input, m.start(), m.end()))
+                {
                     continue;
                 }
                 matches.push(PiiMatch {
@@ -453,8 +512,8 @@ impl PiiScanner {
                 // Credit card: needs Luhn check
                 if named
                     .regex
-                    .find(input)
-                    .is_some_and(|m| luhn_check(m.as_str()))
+                    .find_iter(input)
+                    .any(|m| luhn_check(m.as_str()) && !is_inside_uuid(input, m.start(), m.end()))
                 {
                     return true;
                 }
@@ -1003,6 +1062,138 @@ mod tests {
         assert!(
             audit.iter().all(|n| sanitizer.contains(n)),
             "every audit pattern must also be in the sanitizer profile"
+        );
+    }
+}
+
+#[cfg(test)]
+mod uuid_credit_card_guard_tests {
+    use super::*;
+    use crate::redaction::redact_keys_and_patterns_with_scanner;
+
+    /// The exact approval id that failed on `main`.
+    ///
+    /// `99259028-5431-4010` is 16 digits once the hyphens are dropped, and
+    /// `9925902854314010` is Luhn-valid, so the credit-card pattern matched and
+    /// the audit entry recorded `[REDACTED]` instead of the approval id.
+    const CI_FAILURE_UUID: &str = "99259028-5431-4010-b06f-f16bdbccb850";
+
+    #[test]
+    fn luhn_valid_uuid_is_not_mistaken_for_a_credit_card() {
+        // Guard the premise: without the fix this UUID really does look like a
+        // card. If either half stops holding, the test below proves nothing.
+        let card_digits: String = CI_FAILURE_UUID
+            .chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '-')
+            .filter(|c| c.is_ascii_digit())
+            .collect();
+        assert_eq!(card_digits.len(), 16, "premise: 16 leading digits");
+        assert!(luhn_check(&card_digits), "premise: Luhn-valid");
+
+        let scanner = PiiScanner::new(&[]);
+        assert_eq!(
+            scanner.redact_string(CI_FAILURE_UUID),
+            CI_FAILURE_UUID,
+            "a UUID must survive redaction intact"
+        );
+        assert!(
+            !scanner.has_pii(CI_FAILURE_UUID),
+            "has_pii must not flag a UUID"
+        );
+        assert!(
+            scanner.find_matches(CI_FAILURE_UUID).is_empty(),
+            "find_matches must not report a span inside a UUID"
+        );
+    }
+
+    #[test]
+    fn audit_redaction_preserves_a_luhn_valid_uuid_parameter() {
+        // The end-to-end shape of the CI failure: the value reaches the audit
+        // entry through redact_keys_and_patterns_with_scanner.
+        let params = serde_json::json!({ "approval_id": CI_FAILURE_UUID });
+        let redacted = redact_keys_and_patterns_with_scanner(&params, &PiiScanner::new(&[]));
+        assert_eq!(
+            redacted["approval_id"].as_str(),
+            Some(CI_FAILURE_UUID),
+            "the audit trail must record the approval id, not [REDACTED]"
+        );
+    }
+
+    #[test]
+    fn real_credit_cards_are_still_redacted() {
+        let scanner = PiiScanner::new(&[]);
+        // Luhn-valid test numbers, in the formats the pattern accepts.
+        for card in [
+            "4111111111111111",
+            "4111 1111 1111 1111",
+            "4111-1111-1111-1111",
+            "5555555555554444",
+            "378282246310005",
+        ] {
+            assert!(
+                luhn_check(card),
+                "premise: {card} is Luhn-valid, else this case tests nothing"
+            );
+            assert_eq!(
+                scanner.redact_string(card),
+                REDACTED,
+                "{card} must still be redacted"
+            );
+            assert!(scanner.has_pii(card), "{card} must still be flagged");
+        }
+    }
+
+    #[test]
+    fn a_card_next_to_a_uuid_is_still_redacted() {
+        // Containment, not overlap: a card adjacent to a UUID must not be
+        // shielded by it. This is what makes the guard narrow rather than a
+        // blanket exemption.
+        let scanner = PiiScanner::new(&[]);
+        let input = format!("{CI_FAILURE_UUID} 4111111111111111");
+        let out = scanner.redact_string(&input);
+        assert!(
+            out.contains(CI_FAILURE_UUID),
+            "the UUID must survive: {out}"
+        );
+        assert!(
+            out.contains(REDACTED) && !out.contains("4111111111111111"),
+            "the adjacent card must still be redacted: {out}"
+        );
+    }
+
+    #[test]
+    fn the_guard_holds_across_many_generated_uuids() {
+        // One hand-picked UUID could pass by luck. This covers the whole class:
+        // every all-digit, Luhn-valid leading run must survive.
+        let scanner = PiiScanner::new(&[]);
+        let mut exercised = 0usize;
+        // Deterministic sweep: build UUID-shaped strings whose first three
+        // groups are digits, then keep the Luhn-valid ones.
+        for n in 0..4000u64 {
+            let head = format!(
+                "{:016}",
+                n.wrapping_mul(2_654_435_761) % 10_000_000_000_000_000
+            );
+            let digits: String = head.chars().collect();
+            if !luhn_check(&digits) {
+                continue;
+            }
+            let candidate = format!(
+                "{}-{}-{}-b06f-f16bdbccb850",
+                &digits[0..8],
+                &digits[8..12],
+                &digits[12..16]
+            );
+            exercised += 1;
+            assert_eq!(
+                scanner.redact_string(&candidate),
+                candidate,
+                "UUID-shaped value was redacted: {candidate}"
+            );
+        }
+        assert!(
+            exercised >= 50,
+            "only {exercised} Luhn-valid cases exercised; the sweep is too thin to prove the class"
         );
     }
 }

@@ -9,6 +9,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Audit redaction was silently replacing UUID identifiers with `[REDACTED]`.** The
+  credit-card pattern is `\b(?:\d[ -]*?){13,19}\b` — 13 to 19 digits with spaces or hyphens
+  between them — with a Luhn post-filter. A canonical UUID's first three groups are 16
+  characters in an `8-4-4` layout, so when they happen to be all decimal digits the
+  concatenation is 16 digits and the pattern matches. If those digits also pass Luhn, the
+  **entire value** was replaced, and the audit entry lost the identifier it was supposed to
+  record.
+
+  Found by `Code Coverage` failing on `main`:
+
+  ```
+  test_audit_entry_contains_resolver_identity
+  assertion `left == right` failed: Audit entry should record the approval_id
+    left: "[REDACTED]"   right: "99259028-5431-4010-b06f-f16bdbccb850"
+  ```
+
+  `9925902854314010` is Luhn-valid. Measured over 200,000 random v4 UUIDs, this hits about
+  **1 in 8,300** — rare enough to read as a flaky test, frequent enough that a tamper-evident
+  audit trail intermittently drops accountability fields. It is not specific to
+  `approval_id`: any UUID-valued parameter was affected, and the direction is data loss from
+  the audit record rather than leakage.
+
+  Fixed with a containment guard: a credit-card match is ignored when it lies **wholly
+  inside** a canonical UUID. Containment rather than overlap, so a real card number sitting
+  next to a UUID is still redacted — a canonical UUID is 32 hex characters in a fixed hyphen
+  layout, so no genuine 13-to-19 digit card can be contained in one. Applied at all three
+  places that run the Luhn post-filter (`redact_string`, `find_matches`, `has_pii`), since a
+  guard on one of them would leave the other two wrong. If the guard's own regex ever fails
+  to compile it logs an error and excludes nothing, so the failure mode is over-redaction
+  rather than a leak.
+
+  Verified by mutation rather than by the suite going green: disabling the guard fails four
+  of the five new tests with the production symptom (`[REDACTED]-b06f-f16bdbccb850`), while
+  `real_credit_cards_are_still_redacted` stays green as the control proving card detection is
+  not weakened. The tests also assert their own premises — that the CI failure's leading
+  digits are 16 and Luhn-valid, and that the generated sweep exercised at least 50 Luhn-valid
+  cases — so they cannot pass by testing nothing.
+
+  Note that the originally failing test passing again proves little on its own: it generates
+  a random UUID and would pass roughly 99.99% of the time either way. The deterministic tests
+  are the evidence.
+
 - **The non-Rust dependency surfaces now have a first-party audit gate.** Rust had three —
   cargo-audit, cargo-deny and cargo-vet. Everything else had none: grepping every workflow
   for `npm audit`, `pip-audit`, `safety`, `dependency-check` and `audit-ci` returned nothing.
