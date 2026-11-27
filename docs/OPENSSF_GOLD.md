@@ -92,15 +92,52 @@ Best Practices Gold badge. Criteria are organized by category.
 | `crypto_random` | MET | Uses `rand` crate with OS entropy |
 | `delivery_mitigation` | MET | SHA-256 checksums, SLSA provenance, cargo-vet |
 | `delivery_unsigned` | MET | Release artifacts include checksums |
-| `vulnerabilities_fixed_60_days` | MET | All findings resolved (267 audit rounds, 100% resolution) |
-| `no_unpatched_vulnerabilities` | MET | cargo-audit in CI, Dependabot |
+| `vulnerabilities_fixed_60_days` | MET | Findings from each adversarial audit round are resolved in that round; see `CHANGELOG.md` for the per-round record |
+| `no_unpatched_vulnerabilities` | MET | First-party gates: cargo-audit, cargo-deny and cargo-vet (Rust); `dependency-audit.yml` for npm (every discovered lockfile), Python build requirements (pip-audit) and Go modules (govulncheck), on push, PR and weekly. Thresholds and the gaps are below. |
 | `vulnerabilities_critical_fixed` | MET | CRITICAL findings fixed within same session |
 | `hardening` | MET | docs/HARDENING.md |
-| `security_review` | MET | docs/SECURITY_REVIEW.md (267 adversarial audit rounds) |
-| `dynamic_analysis` | MET | 24 fuzz targets, 5 run in CI (fuzz-ci.yml) |
+| `security_review` | MET | docs/SECURITY_REVIEW.md; per-round detail in `CHANGELOG.md` |
+| `dynamic_analysis` | MET | 24 fuzz targets, all 24 run in CI (`fuzz-ci.yml` matrix, on push and weekly) |
 | `dynamic_analysis_unsafe` | MET | Zero `unsafe` in library code |
 | `dynamic_analysis_enable_assertions` | MET | `overflow-checks = true`, debug_assertions in test profile |
 | `dynamic_analysis_fixed` | MET | All fuzz findings fixed |
+
+### Dependency audit scope and thresholds
+
+`no_unpatched_vulnerabilities` above rests on first-party CI gates, so what they
+cover and where they stop belongs here rather than in the one-line justification.
+
+| Ecosystem | Gate | Threshold |
+|---|---|---|
+| Rust (workspace + 4 sub-trees) | `Security Audit` (cargo-audit), `cargo-deny policy checks`, `Supply Chain Audit (cargo-vet)` | fails on a vulnerability; unmaintained reported as a warning |
+| npm (every discovered `package-lock.json`) | `Dependency Audit (npm)` | fails on **high** and **critical**; moderate and low printed, not fatal |
+| Python build requirements | `Dependency Audit (Python)` (pip-audit) | fails on any known vulnerability |
+| Go (`sdk/go`, `terraform-provider-vellaveto`) | `Dependency Audit (Go)` (govulncheck) | fails on any reported vulnerability |
+
+All three non-Rust jobs run on push to `main`, on pull requests, and weekly. The
+weekly run is the point: an advisory published against a dependency that has not
+changed produces no push and no pull request, so a change-triggered check alone
+would never see it. `RUSTSEC-2026-0543` (chrono, unmaintained) arrived exactly
+that way.
+
+**Two surfaces are not gated, and Dependabot alone covers them:**
+
+- **`sdk/java` (maven).** OWASP dependency-check needs an NVD feed and an API
+  key and is slow and failure-prone; a gate that cannot be kept green is worse
+  than an honest gap.
+- **`sdk/python/requirements-dev.txt`.** It is hash-pinned (`--require-hashes`),
+  and a transitive dependency of `langchain-core` (`langchain-protocol`) is
+  specified as a range rather than `==`, which pip refuses in that mode. So
+  pip-audit cannot resolve it. This is a structural limitation of the file, not
+  a clean result. `requirements-build.txt` is gated.
+
+**One caveat about reading govulncheck output.** It assesses the standard library
+of the toolchain running the scan, not the version in `go.mod`. On a toolchain
+that is behind, both modules report dozens of stdlib advisories that say nothing
+about this repository — scanning them with go1.24.7 produced 36 and 28 findings,
+every one of them stdlib and **none** from the modules' own dependencies. The
+gate therefore installs `stable`. A stdlib finding on a current toolchain is
+real; one from a stale local toolchain is not.
 
 ## Analysis
 

@@ -142,8 +142,14 @@ Puppetry injection, and SANDWORM supply chain worm hardening.
 - **8 new Kani harnesses** (K133-K140)
 - **36 new SDK tests** across Python, TypeScript, Go, Java
 - **5 multi-step attack chains tested** (all blocked by existing defenses)
-- **Supply chain audit**: zero CVEs, zero git dependencies, all registries verified
-- **11,574 Rust tests, 556+ SDK tests, 59 admin console tests, 0 failures**
+- **Supply chain audit**: no known vulnerabilities across the gated ecosystems, zero git
+  dependencies, all registries verified. Gated means a first-party CI check fails on a
+  finding: cargo-audit, cargo-deny and cargo-vet for Rust; `dependency-audit.yml` for npm,
+  Python build requirements and Go. `sdk/java` (maven) and `sdk/python`'s hash-pinned
+  `requirements-dev.txt` are not gated — see docs/OPENSSF_GOLD.md for why.
+- **Test totals are in [Verification inventory](#verification-inventory)**, generated from the
+  source tree. They are not restated here: this line previously read "11,574 Rust tests,
+  556+ SDK tests" against actual figures of 13,116 and 977.
 
 ## Contact
 
