@@ -120,11 +120,31 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      # elan is pinned at v4.4.0 or newer for a specific reason: do NOT move it
+      # back to the v4.2.x line.
+      #
+      # Up to and including v4.2.0, `elan` ran a check for a newer *elan* as
+      # part of installing a toolchain, and a failure of that check aborted the
+      # install. The check scrapes the tag out of the redirect from
+      # github.com/leanprover/elan/releases/latest, unauthenticated, so any
+      # response that is not that redirect -- a rate limit, an error page --
+      # killed the job with the misleading message "failed to parse latest
+      # release tag". The backtrace named it: fetch_latest_release_tag <-
+      # check_self_update <- InstallMethod::run. Nothing about the pinned Lean
+      # toolchain was involved, and the Lean toolchain itself comes from
+      # releases.lean-lang.org, not from GitHub.
+      #
+      # That is what took this job down on main at 1aacc32 while formal/lean and
+      # this workflow were byte-identical to the commit where it last passed.
+      # Upstream demoted the failure to a warning, so v4.4.0 prints
+      # "warning: could not check for elan self-update" and installs anyway --
+      # verified by reproducing the failing lookup and watching v4.2.0 abort and
+      # v4.4.0 continue and build all five proof files.
       - name: Install elan and Lean 4
         run: |
           set -euo pipefail
-          ELAN_VERSION="v4.2.0"
-          ELAN_SHA256="620db834935d0da55ac9cda207b2e370e8034061cbb0228af5eb6c14b02f0c0c"
+          ELAN_VERSION="v4.4.0"
+          ELAN_SHA256="0e8250aa2be86c7af929ade68db617af9edc8b9ccf6eaf5ece228250d0d032e2"
           LEAN_TOOLCHAIN="$(tr -d '\r\n' < formal/lean/lean-toolchain)"
           curl -fsSL --retry 3 --retry-delay 2 -o elan.tar.gz \
             "https://github.com/leanprover/elan/releases/download/${ELAN_VERSION}/elan-x86_64-unknown-linux-gnu.tar.gz"
@@ -133,10 +153,15 @@ jobs:
           ./elan-init -y --default-toolchain "${LEAN_TOOLCHAIN}"
           echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
+      # `lake build` only -- no `lake update`. The package declares no
+      # dependencies at all (no `require` in lakefile.lean), so there is nothing
+      # for an update to resolve, and `lake build` writes the manifest itself on
+      # a fresh tree. Were a dependency ever added, `lake update` here would
+      # silently re-resolve it to whatever is newest on each run, which is the
+      # wrong default for a job whose output is a verification result.
       - name: Build Lean proofs
         working-directory: formal/lean
         run: |
-          lake update
           lake build
 
   coq:
