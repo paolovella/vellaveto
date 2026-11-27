@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The non-Rust dependency surfaces now have a first-party audit gate.** Rust had three —
+  cargo-audit, cargo-deny and cargo-vet. Everything else had none: grepping every workflow
+  for `npm audit`, `pip-audit`, `safety`, `dependency-check` and `audit-ci` returned nothing.
+  Dependabot is configured for npm, pip, gomod, maven and docker, but Dependabot is a
+  *remediation* mechanism, not a detection gate — it opens a PR and fails no build, and 20 of
+  its PRs are currently open, the oldest since #497.
+
+  `.github/workflows/dependency-audit.yml` adds three jobs on push, pull request **and
+  weekly**: npm over every discovered `package-lock.json` (failing on high and critical,
+  printing moderate and low), pip-audit over `sdk/python/requirements-build.txt`, and
+  govulncheck over `sdk/go` and `terraform-provider-vellaveto`.
+
+  The weekly trigger is the point. An advisory published against a dependency that has not
+  changed produces no push and no pull request, so a change-triggered check would never see
+  it — which is exactly how `RUSTSEC-2026-0543` (chrono) arrived.
+
+  **Nothing is currently vulnerable**, established before building the gate rather than
+  assumed: Rust clean over 650 crates bar the unfixable chrono warning, all six npm surfaces
+  at zero, Python build requirements clean, and both Go modules clean of dependency findings.
+  No open Dependabot PR carries a security label.
+
+  **Two findings that were nearly false alarms, and are worth recording as such.**
+  govulncheck reported 36 vulnerabilities for `sdk/go` and 28 for the Terraform provider —
+  every one of them from the *standard library of the toolchain running the scan*
+  (`net/http@go1.24.7`, fixed in `go1.26.11`), and **none** from either module's own
+  dependencies. Separately, bare `pip-audit` reported three advisories in `setuptools 79.0.1`,
+  which was the scratch virtualenv's own setuptools; the repository declares no setuptools and
+  `requirements-build.txt` is clean. Reporting either number as a repository vulnerability
+  would have been a serious false alarm in a security project. The gate therefore installs Go
+  `stable` and names the requirements file explicitly, and both traps are documented where the
+  next person will hit them.
+
+  Lockfiles are discovered rather than listed, so a new surface is covered the day it appears
+  — two of the current six (`sdk/typescript`, `packages/vellaveto-desktop`) have no other CI
+  job at all. Discovery finding zero files fails loudly rather than passing by auditing
+  nothing.
+
+  Verified by mutation: a lockfile with a known critical advisory exits non-zero naming
+  `GHSA-xvch-5gv4-984h`; an empty discovery fails with the blind-gate message; and a
+  moderate-only advisory (`micromatch@4.0.5`) exits 0 at the stated threshold while still
+  being detected and printed, so the documented threshold is the real one. The first attempt
+  at the last two was wrong in both cases — one read a pipe's exit status instead of the
+  script's, and `postcss@8.4.30` turned out to carry a high advisory rather than a moderate
+  one — so neither counted until redone.
+
+- **Corrected three claims in `docs/OPENSSF_GOLD.md` and a set of counts missed earlier.**
+  `no_unpatched_vulnerabilities` was justified as "cargo-audit in CI, Dependabot", which
+  overstated the CI coverage in a badge self-assessment; it now names each gate, its
+  threshold, and the two ungated surfaces. `dynamic_analysis` claimed "24 fuzz targets, 5 run
+  in CI" when `fuzz-ci.yml`'s matrix has 24 and all 24 run — the same stale figure corrected
+  in `CLAUDE.md` earlier. Two audit-round restatements now point at `CHANGELOG.md`.
+
+  `docs/SECURITY_REVIEW.md` still carried "11,574 Rust tests, 556+ SDK tests, 59 admin
+  console tests" against actual figures of 13,116 and 977 — a set of counts **missed when
+  that file was added to the evidence machinery**, which fixed the figures at lines 30-34 and
+  the generated block but not this line. It now points at the generated inventory in the same
+  document. Its "zero CVEs" supply-chain claim is likewise scoped to the gated ecosystems,
+  since the unqualified version implied coverage that did not exist.
+
 - **The extended evidence guard never ran on the two docs it was added to guard.** The
   previous entry added `docs/SECURITY_REVIEW.md` and `docs/FORMAL_SCOPE.md` to
   `scripts/evidence-docs.txt`, so `make claim-check` verifies their generated blocks. But

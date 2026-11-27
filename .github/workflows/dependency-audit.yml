@@ -1,0 +1,164 @@
+name: Dependency Audit
+
+# First-party vulnerability audit for the NON-Rust dependency surfaces.
+#
+# Rust already has three gates -- Security Audit (cargo audit), cargo-deny
+# policy checks, and Supply Chain Audit (cargo-vet). Everything else had none.
+# Dependabot is configured for npm, pip, gomod, maven and docker, but Dependabot
+# is a remediation mechanism, not a detection gate: it opens a PR when an update
+# exists and someone merges it. It does not fail a build, and its PRs can sit.
+#
+# The failure mode this exists for is the one chrono demonstrated: an advisory
+# published against a dependency that never changed. No push, no pull request,
+# nothing for a change-triggered check to react to -- hence the weekly schedule
+# alongside push and pull_request.
+#
+# Covered here: npm (every discovered lockfile), Python build requirements, Go
+# modules. NOT covered: sdk/java (maven). OWASP dependency-check needs an NVD
+# feed and API key and is slow and flaky, so Java keeps relying on Dependabot
+# alone. That gap is stated in docs/OPENSSF_GOLD.md rather than papered over.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly. Minute is jittered off the hour because most schedules land on :00
+    # and get queued behind them; the hour avoids the 14:00-17:00 UTC window
+    # where this account's runs are slowest to start.
+    - cron: "16 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  npm-audit:
+    name: Dependency Audit (npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: "22"
+
+      # `npm audit` reads package-lock.json directly -- no `npm ci`, no
+      # node_modules, so this is seconds per surface rather than minutes.
+      #
+      # Lockfiles are DISCOVERED, not listed, so a new surface is covered the
+      # day it appears. Two of the current six (sdk/typescript,
+      # packages/vellaveto-desktop) have no other CI job at all, which is
+      # exactly why enumeration beats a hardcoded list.
+      - name: Audit every npm lockfile
+        run: |
+          set -euo pipefail
+
+          mapfile -t locks < <(find . -name package-lock.json \
+            -not -path '*/node_modules/*' \
+            -not -path './target/*' | sort)
+
+          # A discovery that returns nothing would make this job pass by
+          # auditing nothing -- the way a guard goes blind. Assert it found
+          # something before trusting a green result.
+          if [ "${#locks[@]}" -eq 0 ]; then
+            echo "::error::found no package-lock.json files to audit; the layout changed and this gate went blind"
+            exit 1
+          fi
+          echo "Auditing ${#locks[@]} npm surface(s)."
+
+          failed=0
+          for lock in "${locks[@]}"; do
+            dir="$(dirname "$lock")"
+            echo "::group::npm audit $dir"
+            # Fail on high and critical only, matching cargo audit's posture of
+            # failing on a vulnerability. Moderate and low are printed for
+            # visibility without breaking unrelated work; raising this threshold
+            # is a deliberate, documented decision, never a silent one.
+            if ! (cd "$dir" && npm audit --audit-level=high); then
+              echo "::error::npm audit found high or critical advisories in $dir"
+              failed=1
+            fi
+            # Report the full picture even when the gate passes.
+            (cd "$dir" && npm audit --audit-level=low || true)
+            echo "::endgroup::"
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "npm: no high or critical advisories across ${#locks[@]} surface(s)."
+
+  python-audit:
+    name: Dependency Audit (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install --disable-pip-version-check pip-audit==2.10.1
+
+      # Audited explicitly against the repo's own requirements file rather than
+      # bare `pip-audit`, which audits whatever happens to be installed in the
+      # ambient environment and will happily report the runner's own setuptools
+      # as a finding. The file must be named.
+      #
+      # requirements-dev.txt is NOT audited: it is hash-pinned
+      # (--require-hashes), and a transitive dependency of langchain-core
+      # (langchain-protocol) is specified as a range rather than ==, which pip
+      # refuses in require-hashes mode. That is a structural limitation of the
+      # file, not a clean result, and is recorded in docs/OPENSSF_GOLD.md.
+      - name: Audit Python build requirements
+        run: |
+          set -euo pipefail
+          req="sdk/python/requirements-build.txt"
+          if [ ! -f "$req" ]; then
+            echo "::error::$req is missing; this gate is pointed at a file that no longer exists"
+            exit 1
+          fi
+          pip-audit -r "$req"
+
+  go-audit:
+    name: Dependency Audit (Go)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # `stable` deliberately, not a pinned old version and not go-version-file.
+      #
+      # govulncheck assesses the standard library of the toolchain running the
+      # scan, not the version in go.mod. On a toolchain that is behind, every
+      # module reports dozens of stdlib advisories that say nothing about this
+      # repository: scanning these two modules with go1.24.7 produced 36 and 28
+      # findings, every one of them stdlib and none from the modules' own
+      # dependencies. A current toolchain is what makes a finding here mean
+      # something about our code.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with:
+          go-version: stable
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Audit Go modules
+        run: |
+          set -euo pipefail
+          mods=(sdk/go terraform-provider-vellaveto)
+          for m in "${mods[@]}"; do
+            if [ ! -f "$m/go.mod" ]; then
+              echo "::error::$m/go.mod is missing; this gate is pointed at a module that no longer exists"
+              exit 1
+            fi
+            echo "::group::govulncheck $m"
+            (cd "$m" && govulncheck ./...)
+            echo "::endgroup::"
+          done
+          echo "Go: no vulnerabilities reported for ${#mods[@]} module(s)."

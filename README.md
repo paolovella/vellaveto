@@ -517,6 +517,14 @@ are hedged the way they are.
   first-party audits**; all **650** dependency entries are *exemptions* pinned to an exact
   version. What the gate actually enforces is that a new version must be re-blessed
   deliberately — nobody has reviewed those crates' source.
+- **Two dependency surfaces have no first-party audit gate.** `dependency-audit.yml` gates
+  npm (every discovered lockfile), Python build requirements and the Go modules, alongside
+  the three Rust gates. `sdk/java` (maven) is not gated — OWASP dependency-check needs an
+  NVD feed and API key and is slow and failure-prone — and neither is
+  `sdk/python/requirements-dev.txt`, which pip-audit cannot resolve because it is
+  hash-pinned while a transitive dependency of `langchain-core` is specified as a range.
+  Both rely on Dependabot, which opens PRs but fails no build. See
+  [docs/OPENSSF_GOLD.md](docs/OPENSSF_GOLD.md) for the full scope and thresholds.
 - **One advisory is suppressed, and CI now enforces the reason.** `RUSTSEC-2026-0459`
   (CVE-2026-119375, 6.8 medium, bundled C SQLite) is ignored in `.cargo/audit.toml`, because
   `libsqlite3-sys` reaches `Cargo.lock` via `sqlx-sqlite` while only `sqlx`'s Postgres
